@@ -30,7 +30,7 @@
         <span class="pulse-dot" aria-hidden="true"></span>
         <div>
           <strong>{{ typhoon_status }}</strong>
-          <span>Data as of {{ as_of }} · Official notices only</span>
+          <span>Data as of {{ as_of|short_time }} · Official notices only</span>
         </div>
       </div>
 
@@ -246,7 +246,7 @@
             {% if gate_events %}
               {% for event in gate_events %}
                 <div class="blocked-item">
-                  <div><strong>{{ event.guest_name }}</strong><span>{{ event.time|short_time }}</span></div>
+                  <div><strong>{{ event.guest_name }}</strong><span>{{ event.time|short_time(as_of, log_base_time) }}</span></div>
                   <ul>{% for reason in event.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
                 </div>
               {% endfor %}
@@ -280,7 +280,7 @@
             {% for event in activity %}
               <div class="timeline-item">
                 <span class="timeline-dot actor-{{ event.actor|lower }}" aria-hidden="true"></span>
-                <div><strong>{{ event.label }}</strong><p>{{ event.actor }} · {{ event.subject }}</p><time>{{ event.time|short_time }}</time></div>
+                <div><strong>{{ event.label }}</strong><p>{{ event.actor }} · {{ event.subject }}</p><time>{{ event.time|short_time(as_of, log_base_time) }}</time></div>
               </div>
             {% else %}
               <p class="muted-copy">No decision activity has been logged yet.</p>

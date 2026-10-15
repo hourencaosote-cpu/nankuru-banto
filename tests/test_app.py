@@ -69,6 +69,12 @@ class AppSafetyTests(unittest.TestCase):
     def _read_approvals(self):
         return json.loads(self.approvals_path.read_text(encoding="utf-8"))
 
+    def _write_log_entries(self, entries):
+        self.log_path.write_text(
+            "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries),
+            encoding="utf-8",
+        )
+
     def _csrf_token(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
@@ -231,6 +237,59 @@ class AppSafetyTests(unittest.TestCase):
         self.assertIn("#23305e", css)
         self.assertIn("#f4f2ec", css)
         self.assertIn("#15202b", css)
+
+    def test_last_reset_anchors_demo_time_without_changing_audit_log(self):
+        self._write_log_entries([
+            {"time": "2026-10-15T09:00:00", "actor": "ai", "action": "finished", "detail": {}},
+            {"time": "2026-10-15T12:00:00", "actor": "human", "action": "reset_demo", "detail": {}},
+            {"time": "2026-10-15T12:03:00", "actor": "ai", "action": "finished", "detail": {}},
+        ])
+
+        page = self.client.get("/").get_data(as_text=True)
+
+        self.assertIn("Data as of Aug 6 · 22:00", page)
+        self.assertIn("Aug 6 · 22:03", page)
+        self.assertEqual(
+            json.loads(self.log_path.read_text(encoding="utf-8").splitlines()[-1])["time"],
+            "2026-10-15T12:03:00",
+        )
+
+    def test_first_log_entry_anchors_demo_time_without_reset(self):
+        self._write_log_entries([
+            {"time": "2026-10-15T09:00:00", "actor": "ai", "action": "finished", "detail": {}},
+            {"time": "2026-10-15T09:04:00", "actor": "ai", "action": "finished", "detail": {}},
+        ])
+
+        page = self.client.get("/").get_data(as_text=True)
+
+        self.assertIn("Aug 6 · 22:00", page)
+        self.assertIn("Aug 6 · 22:04", page)
+
+    def test_demo_time_advances_to_next_date(self):
+        self._write_log_entries([
+            {"time": "2026-10-15T10:00:00", "actor": "human", "action": "reset_demo", "detail": {}},
+            {"time": "2026-10-15T12:15:00", "actor": "gate", "action": "rejected_proposal",
+             "detail": {"guest_id": "G004", "reasons": ["OTA経由の予約です。"]}},
+        ])
+
+        page = self.client.get("/").get_data(as_text=True)
+
+        self.assertIn("Aug 7 · 00:15", page)
+        self.assertEqual(page.count("Aug 7 · 00:15"), 2)
+
+    def test_gate_activity_uses_guest_name_and_unknown_id_fallback(self):
+        self._write_log_entries([
+            {"time": "2026-10-15T10:00:00", "actor": "gate", "action": "rejected_proposal",
+             "detail": {"guest_id": "G004", "reasons": ["OTA経由の予約です。"]}},
+            {"time": "2026-10-15T10:01:00", "actor": "gate", "action": "rejected_proposal",
+             "detail": {"guest_id": "G999", "reasons": ["OTA経由の予約です。"]}},
+        ])
+
+        page = self.client.get("/").get_data(as_text=True)
+
+        self.assertIn("GATE · Liu Wei", page)
+        self.assertIn("GATE · G999", page)
+        self.assertNotIn("GATE · G004", page)
 
 
 if __name__ == "__main__":

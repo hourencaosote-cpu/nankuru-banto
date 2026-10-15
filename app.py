@@ -99,14 +99,19 @@ def format_money(value):
 
 
 @app.template_filter("short_time")
-def format_short_time(value):
+def format_short_time(value, as_of=None, base_time=None):
     try:
-        return datetime.fromisoformat(value).strftime("%b %d · %H:%M")
+        display_time = datetime.fromisoformat(value)
+        if as_of is not None and base_time is not None:
+            display_time = datetime.fromisoformat(as_of) + (
+                display_time - datetime.fromisoformat(base_time)
+            )
+        return f"{display_time.strftime('%b')} {display_time.day} · {display_time.strftime('%H:%M')}"
     except (TypeError, ValueError):
         return value or "Unknown time"
 
 
-def _read_log_entries(limit=80):
+def _read_log_entries():
     if not os.path.exists(LOG_PATH):
         return []
     entries = []
@@ -116,7 +121,7 @@ def _read_log_entries(limit=80):
                 entries.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-    return entries[-limit:]
+    return entries
 
 
 def _gate_reason(reason):
@@ -152,7 +157,7 @@ def _guest_response(guest, items, flight_status):
     return "No action needed", "neutral"
 
 
-def _log_view(entry, flights, guest_count):
+def _log_view(entry, flights, guest_count, guest_names):
     detail = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
     if entry.get("action") == "tool_call":
         name = detail.get("name")
@@ -178,7 +183,11 @@ def _log_view(entry, flights, guest_count):
             "subject": subject,
         }
 
-    subject = detail.get("guest_name") or detail.get("id") or detail.get("guest_id") or "System"
+    guest_id = detail.get("guest_id")
+    if entry.get("action") == "rejected_proposal":
+        subject = guest_names.get(guest_id) or guest_id or "System"
+    else:
+        subject = guest_names.get(guest_id) or detail.get("guest_name") or detail.get("id") or guest_id or "System"
     return {
         "time": entry.get("time", ""),
         "actor": str(entry.get("actor", "system")).upper(),
@@ -192,6 +201,10 @@ def build_dashboard():
     flight_data = read_json(os.path.join(DATA_DIR, "flights.json"), {})
     approvals = read_json(APPROVALS_PATH, [])
     log_entries = _read_log_entries()
+    base_time = next(
+        (entry.get("time") for entry in reversed(log_entries) if entry.get("action") == "reset_demo" and entry.get("time")),
+        log_entries[0].get("time") if log_entries else None,
+    )
     flights = flight_data.get("flights", {})
     guests = guest_data.get("guests", [])
     guest_names = {guest.get("id"): guest.get("name", "Unknown guest") for guest in guests}
@@ -234,7 +247,7 @@ def build_dashboard():
 
     gate_events = []
     seen_guests = set()
-    for entry in reversed(log_entries):
+    for entry in reversed(log_entries[-80:]):
         if entry.get("action") != "rejected_proposal":
             continue
         detail = entry.get("detail", {})
@@ -265,6 +278,7 @@ def build_dashboard():
     return {
         "hotel": guest_data.get("hotel", "Nankuru Demo Inn"),
         "as_of": flight_data.get("as_of", "Unknown"),
+        "log_base_time": base_time,
         "typhoon_status": "Typhoon response active" if cancelled_count else "No official cancellations",
         "metrics": {
             "checkouts": len(guests),
@@ -280,7 +294,7 @@ def build_dashboard():
         "gate_events": gate_events,
         "gate_rules": GATE_RULES,
         "social_posts": flight_data.get("unverified_social_posts", []),
-        "activity": [_log_view(entry, flights, len(guests)) for entry in reversed(log_entries[-18:])],
+        "activity": [_log_view(entry, flights, len(guests), guest_names) for entry in reversed(log_entries[-18:])],
         "status_labels": STATUS_LABELS,
     }
 
@@ -332,15 +346,12 @@ def run_ai_check():
 def reset_demo():
     try:
         with ACTION_LOCK:
-            archive_name = archive_demo_state()
+            archive_demo_state()
     except OSError as error:
         _record_web_failure("reset_demo", error)
         flash("The demo could not be reset. Existing data was left in place where possible.", "error")
     else:
-        flash(
-            f"Demo reset. Previous files were archived as {archive_name}. PayPal invoices were not changed.",
-            "success",
-        )
+        flash("Demo reset. Previous files were archived. PayPal invoices were not changed.", "success")
     return redirect(url_for("dashboard"))
 
 
