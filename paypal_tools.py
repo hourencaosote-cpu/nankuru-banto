@@ -67,7 +67,7 @@ def create_extension_invoice(env, nights, nightly_rate_usd, discount_percent, no
     invoice = {
         "detail": {"currency_code": currency, "note": note[:3900]},
         "items": [{
-            "name": "Typhoon stay extension (1 night)",
+            "name": "Typhoon stay extension (per night)",
             "quantity": str(nights),
             "unit_amount": {"currency_code": currency, "value": f"{nightly_rate_usd:.2f}"},
             "discount": {"percent": str(discount_percent)},

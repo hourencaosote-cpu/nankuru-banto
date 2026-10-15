@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · nankuru BANTŌ</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600;700&amp;family=M+PLUS+Rounded+1c:wght@500;700;800&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="error-page">
+  <main class="error-card">
+    <div class="error-brand" role="img" aria-label="nankuru BANTŌ">
+      <svg class="noren-n" viewBox="0 0 58 52" aria-hidden="true"><path d="M0 52 V12 Q0 0 12 0 H46 Q58 0 58 12 V52 H42 V27 A13 13 0 0 0 16 27 V52 Z" fill="currentColor"/></svg>
+      <span class="brand-wordmark" aria-hidden="true">ankuru <strong>BANTŌ</strong></span>
+    </div>
+    <p class="eyebrow">Manager approval desk</p>
+    <h1>{{ title }}</h1>
+    <p>{{ message }}</p>
+    <a class="button button-primary" href="{{ url_for('dashboard') }}">Return to dashboard</a>
+  </main>
+</body>
+</html>

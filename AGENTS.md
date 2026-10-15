@@ -48,7 +48,7 @@ staff_note：pending → acknowledged / dismissed。
 見本の配置・文言・色に合わせる。画面の文字は英語。
 
 ### 作るもの
-- Flask の `app.py` を1つ追加。`python3 app.py` で http://localhost:5000 に画面が出る。
+- Flask の `app.py` を1つ追加。`python3 app.py` で http://localhost:5001 に画面が出る（macOS は 5000 番を AirPlay が使うため）。
 - テンプレートは `templates/`、CSS は `static/`。JavaScript は最小限（フォーム送信で十分）。
 
 ### 画面の中身（見本の Main に合わせる）

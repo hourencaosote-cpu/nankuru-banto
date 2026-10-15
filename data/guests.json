@@ -1,13 +1,13 @@
 {
-  "note": "デモ用の架空の宿泊客です。実在の人物・予約とは関係ありません。",
-  "hotel": "Nankuru Demo Inn（架空の宿・全20室）",
+  "note": "Fictional demo guests. Not real people or bookings.",
+  "hotel": "Nankuru Demo Inn (fictional · 20 rooms)",
   "guests": [
     {
       "id": "G001",
       "name": "Emily Carter",
       "room": "301",
       "language": "English",
-      "party": "大人2名・子ども1名",
+      "party": "2 adults, 1 child",
       "checkout_date": "2026-08-07",
       "departure_flight": "DEMO-101",
       "nightly_rate_usd": 80,
@@ -18,7 +18,7 @@
       "name": "Kim Minji",
       "room": "205",
       "language": "Korean",
-      "party": "大人2名",
+      "party": "2 adults",
       "checkout_date": "2026-08-07",
       "departure_flight": "DEMO-202",
       "nightly_rate_usd": 70,
@@ -26,10 +26,10 @@
     },
     {
       "id": "G003",
-      "name": "田中 健",
+      "name": "Ken Tanaka (田中 健)",
       "room": "102",
       "language": "Japanese",
-      "party": "大人1名",
+      "party": "1 adult",
       "checkout_date": "2026-08-07",
       "departure_flight": "DEMO-303",
       "nightly_rate_usd": 60,
@@ -40,7 +40,7 @@
       "name": "Liu Wei",
       "room": "408",
       "language": "Chinese",
-      "party": "大人2名",
+      "party": "2 adults",
       "checkout_date": "2026-08-07",
       "departure_flight": "DEMO-404",
       "nightly_rate_usd": 90,
@@ -51,7 +51,7 @@
       "name": "Sophie Martin",
       "room": "110",
       "language": "French",
-      "party": "大人1名",
+      "party": "1 adult",
       "checkout_date": "2026-08-07",
       "departure_flight": "DEMO-505",
       "nightly_rate_usd": 65,
@@ -61,6 +61,6 @@
   "vacant_rooms_for_extension": 3,
   "hotel_policy": {
     "typhoon_discount_percent": 20,
-    "note": "台風割引の割合は宿が決める（AIは決めない）"
+    "note": "The typhoon discount is set by the inn, never by the AI."
   }
 }

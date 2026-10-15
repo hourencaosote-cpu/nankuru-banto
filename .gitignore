@@ -1,5 +1,7 @@
 env.txt
 .env
 __pycache__/
+.venv/
 logs/
 data/approvals.json
+data/archive/

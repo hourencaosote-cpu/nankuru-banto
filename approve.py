@@ -26,6 +26,99 @@ def final_message(item):
     return item["message_draft"] + (f"\n\n{price}" if price else "")
 
 
+def _find_item(queue, item_id):
+    for item in queue:
+        if item.get("id") == item_id:
+            return item
+    raise ValueError(f"Approval item '{item_id}' was not found.")
+
+
+def approve_extension(item_id, env=None):
+    """人が承認した延泊だけを PayPal sandbox の請求書にする。"""
+    queue = read_json(APPROVALS_PATH, [])
+    item = _find_item(queue, item_id)
+    if item.get("type") != "extension":
+        raise ValueError("Only stay-extension proposals can be approved here.")
+    if item.get("status") not in ("pending", "approved"):
+        raise ValueError("This proposal is no longer waiting for approval.")
+
+    env = env or load_env()
+    buyer_email = env.get("BUYER_EMAIL", "")
+    amount = item.get("amount_usd")
+    resumed_draft = item.get("status") == "approved"
+
+    if not resumed_draft:
+        message = final_message(item)
+        try:
+            invoice_id, amount = create_extension_invoice(
+                env,
+                item["nights"],
+                item["nightly_rate_usd"],
+                item["discount_percent"],
+                note=message,
+                recipient_email=buyer_email,
+            )
+        except (RuntimeError, SystemExit):
+            log_decision("human", "approval_failed", {"id": item_id, "stage": "create_invoice"})
+            raise
+        item["invoice_id"] = invoice_id
+        item["status"] = "approved"
+        write_json(APPROVALS_PATH, queue)
+
+    if buyer_email:
+        try:
+            invoice_status, pay_url = send_invoice(env, item["invoice_id"])
+        except (RuntimeError, SystemExit):
+            log_decision(
+                "human",
+                "approved_extension",
+                {"id": item_id, "invoice_id": item["invoice_id"], "status": "approved", "send_failed": True},
+            )
+            raise
+        item["status"] = "sent"
+        item["paypal_status"] = invoice_status
+        item["pay_url"] = pay_url
+
+    write_json(APPROVALS_PATH, queue)
+    log_decision(
+        "human",
+        "sent_extension_invoice" if resumed_draft and buyer_email else "approved_extension",
+        {"id": item_id, "invoice_id": item["invoice_id"], "status": item["status"]},
+    )
+    return item, amount
+
+
+def reject_extension(item_id):
+    queue = read_json(APPROVALS_PATH, [])
+    item = _find_item(queue, item_id)
+    if item.get("type") != "extension" or item.get("status") != "pending":
+        raise ValueError("This proposal is no longer waiting for a decision.")
+    item["status"] = "rejected"
+    write_json(APPROVALS_PATH, queue)
+    log_decision("human", "rejected_extension", {"id": item_id})
+    return item
+
+
+def defer_item(item_id):
+    queue = read_json(APPROVALS_PATH, [])
+    item = _find_item(queue, item_id)
+    if item.get("status") != "pending":
+        raise ValueError("This item is no longer waiting for a decision.")
+    log_decision("human", "deferred", {"id": item_id, "type": item.get("type")})
+    return item
+
+
+def resolve_staff_note(item_id, handled=True):
+    queue = read_json(APPROVALS_PATH, [])
+    item = _find_item(queue, item_id)
+    if item.get("type") != "staff_note" or item.get("status") != "pending":
+        raise ValueError("This staff note is no longer waiting for a decision.")
+    item["status"] = "acknowledged" if handled else "dismissed"
+    write_json(APPROVALS_PATH, queue)
+    log_decision("human", item["status"], {"id": item_id})
+    return item
+
+
 def main():
     queue = read_json(APPROVALS_PATH, [])
     pending = [item for item in queue if item["status"] == "pending"]
@@ -54,41 +147,34 @@ def main():
             answer = ask(f"\nこの延泊を承認して、PayPal で{action}？ y / n / s : ")
             if answer == "y":
                 try:
-                    invoice_id, amount = create_extension_invoice(
-                        env, item["nights"], item["nightly_rate_usd"], item["discount_percent"],
-                        note=message, recipient_email=buyer_email)
-                    item["invoice_id"] = invoice_id
-                    item["status"] = "approved"
-                    if buyer_email:
-                        invoice_status, pay_url = send_invoice(env, invoice_id)
-                        item["status"] = "sent"
-                        item["pay_url"] = pay_url
+                    item, amount = approve_extension(item["id"], env=env)
                 except RuntimeError as e:
                     print(f"  PayPal でエラーが起きました。\n  {e}")
-                    if "invoice_id" not in item:
+                    current = _find_item(read_json(APPROVALS_PATH, []), item["id"])
+                    if "invoice_id" not in current:
                         print("  この件は承認待ちのまま残します。")
                         continue
-                log_decision("human", "approved_extension",
-                             {"id": item["id"], "invoice_id": item["invoice_id"], "status": item["status"]})
+                    item = current
+                    amount = item.get("amount_usd")
                 if item["status"] == "sent":
                     print(f"  → 承認しました。請求書を客に送りました（ID: {item['invoice_id']}、合計 {amount} ドル）。")
                     print(f"    客が支払うページ: {item.get('pay_url') or '（PayPal の画面で確認してください）'}")
                 else:
                     print(f"  → 承認しました。PayPal に請求書の下書きを作りました（ID: {item['invoice_id']}、合計 {amount} ドル）。")
             elif answer == "n":
-                item["status"] = "rejected"
-                log_decision("human", "rejected_extension", {"id": item["id"]})
+                reject_extension(item["id"])
                 print("  → 却下しました。何も実行していません。")
             else:
+                defer_item(item["id"])
                 print("  → あとで確認します。")
         else:
             print(f"[{item['id']}] スタッフへの連絡　{item['guest_name']} 様")
             print(f"  内容: {item['note']}")
             answer = ask("\n確認しましたか？ y（確認済みにする）/ n（不要として閉じる）/ s（あとで）: ")
             if answer in ("y", "n"):
-                item["status"] = "acknowledged" if answer == "y" else "dismissed"
-                log_decision("human", item["status"], {"id": item["id"]})
-        write_json(APPROVALS_PATH, queue)  # 1件ずつ保存（途中でやめても結果が残る）
+                resolve_staff_note(item["id"], handled=answer == "y")
+            else:
+                defer_item(item["id"])
         print()
 
     print("すべての確認が終わりました。判断の記録は logs/decision_log.jsonl に残っています。")

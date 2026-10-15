@@ -26,3 +26,15 @@
 
 客が支払ったかの確認
   python3 check_payments.py   （支払われた延泊は「確定」になり、一覧に出る）
+
+責任者向け Web 画面
+  python3 -m venv .venv
+  source .venv/bin/activate
+  python3 -m pip install -r requirements.txt
+  python3 app.py
+
+  ブラウザで http://localhost:5001 を開く
+  Run AI check と Check payments は処理中の表示が出ます。
+  承認・却下・支払い確認など、状態を変える操作はすべて POST で実行されます。
+  Reset demo は現在の承認データと判断ログを data/archive/ に移してから空にします。
+  PayPal sandbox 側の請求書は変更しません。
