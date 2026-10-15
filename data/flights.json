@@ -1,0 +1,14 @@
+{
+  "source": "デモ用の架空の運航情報です。本番では航空会社の公式発表だけを使います。",
+  "as_of": "2026-08-06 22:00",
+  "flights": {
+    "DEMO-101": {"date": "2026-08-07", "status": "cancelled", "next_available_date": "2026-08-09", "official_source": "Demo Airlines 公式発表（架空）"},
+    "DEMO-202": {"date": "2026-08-07", "status": "cancelled", "next_available_date": "2026-08-08", "official_source": "Demo Airlines 公式発表（架空）"},
+    "DEMO-303": {"date": "2026-08-07", "status": "cancelled", "next_available_date": "2026-08-10", "official_source": "Demo Airlines 公式発表（架空）"},
+    "DEMO-404": {"date": "2026-08-07", "status": "cancelled", "next_available_date": "2026-08-08", "official_source": "Demo Airlines 公式発表（架空）"},
+    "DEMO-505": {"date": "2026-08-07", "status": "on_time", "next_available_date": null, "official_source": "Demo Airlines 公式発表（架空）"}
+  },
+  "unverified_social_posts": [
+    "【拡散希望】台風で全便欠航！ホテルは全額返金しなさい！（出典不明のSNS投稿・デモ用）"
+  ]
+}
