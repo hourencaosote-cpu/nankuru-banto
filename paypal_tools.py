@@ -7,6 +7,7 @@ AI（agent.py）からは呼べないようにしてある。
 
 import base64
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -66,6 +67,7 @@ def create_extension_invoice(env, nights, nightly_rate_usd, discount_percent, no
     currency = "USD"
     invoice = {
         "detail": {"currency_code": currency, "note": note[:3900]},
+        "invoicer": {"business_name": os.environ.get("INVOICE_BUSINESS_NAME") or "Nankuru Demo Inn"},
         "items": [{
             "name": "Typhoon stay extension (per night)",
             "quantity": str(nights),

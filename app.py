@@ -18,10 +18,11 @@ from common import APPROVALS_PATH, DATA_DIR, LOG_PATH, load_env, log_decision, r
 
 app = Flask(__name__)
 app.config.update(
-    SECRET_KEY=secrets.token_hex(32),
+    SECRET_KEY=os.environ.get("SECRET_KEY") or secrets.token_hex(32),
     MAX_CONTENT_LENGTH=16 * 1024,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Strict",
+    SESSION_COOKIE_SECURE="RENDER" in os.environ,
 )
 
 ACTION_LOCK = threading.Lock()
@@ -326,6 +327,11 @@ def _record_web_failure(action, error):
 @app.get("/")
 def dashboard():
     return render_template("dashboard.html", **build_dashboard())
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
 
 
 @app.post("/run-ai")

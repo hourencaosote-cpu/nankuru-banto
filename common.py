@@ -4,7 +4,6 @@
 
 import json
 import os
-import sys
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -12,14 +11,23 @@ DATA_DIR = os.path.join(HERE, "data")
 LOG_DIR = os.path.join(HERE, "logs")
 APPROVALS_PATH = os.path.join(DATA_DIR, "approvals.json")
 LOG_PATH = os.path.join(LOG_DIR, "decision_log.jsonl")
+ENV_KEYS = (
+    "PAYPAL_CLIENT_ID",
+    "PAYPAL_CLIENT_SECRET",
+    "BUYER_EMAIL",
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "SECRET_KEY",
+    "INVOICE_BUSINESS_NAME",
+)
 
 
 def load_env():
-    """同じフォルダの env.txt（なければ .env）から KEY=VALUE を読み込む。"""
+    """環境変数を読み、同じフォルダの env.txt（なければ .env）を優先する。"""
+    env = {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
     for name in ("env.txt", ".env"):
         path = os.path.join(HERE, name)
-        if os.path.exists(path):
-            env = {}
+        if os.path.isfile(path):
             with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -28,7 +36,7 @@ def load_env():
                     key, value = line.split("=", 1)
                     env[key.strip()] = value.strip().strip('"').strip("'")
             return env
-    sys.exit(f"設定ファイルが見つかりません（{HERE} に env.txt を置いてください）。")
+    return env
 
 
 def read_json(path, default):

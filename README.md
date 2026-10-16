@@ -114,6 +114,10 @@ python3 -m unittest
 
 Gemini and PayPal are mocked; tests make no network calls.
 
+## Deploy to Render
+
+Create a Render Blueprint from this repository using `render.yaml`. Set the environment variables `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `BUYER_EMAIL`, `GEMINI_API_KEY`, `GEMINI_MODEL`, and `SECRET_KEY` in Render's dashboard. Optionally set `INVOICE_BUSINESS_NAME` for the invoice sender; otherwise it is `Nankuru Demo Inn`. Use PayPal Sandbox credentials. The health check endpoint is `/healthz`.
+
 ## Project structure
 
 ```
