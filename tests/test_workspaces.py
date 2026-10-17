@@ -145,13 +145,42 @@ class WorkspaceTests(unittest.TestCase):
     def test_sixth_ai_run_is_blocked_before_model_call(self):
         client, workspace_id, csrf = self._client()
         answer = {"candidates": [{"content": {"role": "model", "parts": [{"text": "Done"}]}}]}
-        with mock.patch.object(agent, "call_gemini", return_value=answer) as model, mock.patch("builtins.print"):
+        with mock.patch.object(agent, "REPLAY_PATH", str(self.data_dir / "missing-replay.json")), \
+             mock.patch.object(agent, "call_gemini", return_value=answer) as model, mock.patch("builtins.print"):
             for _ in range(6):
                 self.assertEqual(self._post(client, "/run-ai", csrf).status_code, 302)
         self.assertEqual(model.call_count, 5)
         self.assertIn("AI demo limit for this hour", client.get("/").get_data(as_text=True))
         log = (self._queue_path(workspace_id).parent / "decision_log.jsonl").read_text(encoding="utf-8")
         self.assertIn('"action": "rate_limit_blocked"', log)
+
+    def test_global_ai_limit_uses_replay_without_gemini_or_quota(self):
+        client, workspace_id, csrf = self._client()
+        replay_path = self.data_dir / "replay" / "gemini_run.json"
+        replay_path.parent.mkdir()
+        replay_path.write_text(json.dumps([
+            {"candidates": [{"content": {"role": "model", "parts": [
+                {"functionCall": {"name": "propose_stay_extension", "args": {
+                    "guest_id": "G001", "nights": 2, "reason": "Official cancellation.",
+                    "message_draft": "A safe extension is available.",
+                }}},
+            ]}}]},
+            {"candidates": [{"content": {"role": "model", "parts": [{"text": "Done."}]}}]},
+        ]), encoding="utf-8")
+
+        with mock.patch.dict(os.environ, {"MAX_AI_RUNS_PER_DAY": "0"}), \
+             mock.patch.object(agent, "REPLAY_PATH", str(replay_path)), \
+             mock.patch.object(agent, "call_gemini", side_effect=AssertionError("Gemini must not be called")) as model, \
+             mock.patch("builtins.print"):
+            self.assertEqual(self._post(client, "/run-ai", csrf).status_code, 302)
+
+        model.assert_not_called()
+        self.assertEqual(len(self._queue(workspace_id)), 1)
+        self.assertIn("Demo replay — recorded Gemini responses", client.get("/").get_data(as_text=True))
+        self.assertFalse((self.data_dir / "workspaces" / "_limits.json").exists())
+        log = (self._queue_path(workspace_id).parent / "decision_log.jsonl").read_text(encoding="utf-8")
+        self.assertIn('"action": "replay_mode"', log)
+        self.assertIn("global_day", log)
 
     def test_ai_run_without_a_model_call_does_not_use_a_slot(self):
         client, _, csrf = self._client()

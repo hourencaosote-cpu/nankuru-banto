@@ -106,6 +106,8 @@ In `env.txt`:
 
 A terminal-only version is also available: `python3 agent.py --reset`, `python3 approve.py`, `python3 check_payments.py`.
 
+`AI_MODE` defaults to `auto` (try Gemini, then a recorded demo if available); set it to `live` or `replay` to choose one source. After a successful live run, `python3 agent.py --reset --record` saves Gemini responses in `data/replay/gemini_run.json` for demo replay.
+
 ### Tests
 
 ```bash
@@ -134,6 +136,7 @@ tests/              Offline tests
 ## Notes
 
 - Each visitor has a private demo workspace, cleared after 24 hours of inactivity; demo AI runs and invoice creation have per-visitor and daily limits.
+- Demo replay is labeled on screen and still runs the real safety gate; invoices require manager approval. Web AI checks use `AI_RUN_BUDGET_SECONDS` (default 150); CLI recording has no run deadline. Optional `GEMINI_FALLBACK_MODELS` lists backup models separated by commas.
 - **All data is fictional.** Guests, flights and the inn are invented. No real guest data is sent to any AI service.
 - **Sandbox only.** The PayPal base URL is fixed to the Sandbox.
 - The app never forecasts weather. In Japan, weather forecasting is licensed under the Meteorological Service Act; the agent only reads official notices.

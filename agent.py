@@ -11,11 +11,15 @@
 """
 
 import json
+import logging
+import math
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
+from contextvars import ContextVar
 from datetime import date, datetime
 
 from common import DATA_DIR, approvals_path, load_env, log_decision, read_json, write_json
@@ -25,6 +29,22 @@ MAX_NIGHTS = 3            # 延泊は最大3泊まで
 MAX_DISCOUNT_PERCENT = 30  # 台風割引は最大30%まで
 ACTIVE_EXTENSION_STATUSES = {"pending", "approved", "sent", "confirmed"}
 INVESTIGATION_TOOLS = {"list_guests", "get_flight_status", "get_social_posts"}
+REPLAY_PATH = os.path.join(DATA_DIR, "replay", "gemini_run.json")
+_run_state = ContextVar("gemini_run_state", default=None)
+
+
+class GeminiUnavailable(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def _budget_seconds(env):
+    try:
+        value = float(env.get("AI_RUN_BUDGET_SECONDS", "150"))
+        return value if math.isfinite(value) and value > 0 else 150.0
+    except (TypeError, ValueError):
+        return 150.0
 
 SYSTEM_PROMPT = """あなたは、台風の多い地域にある小さな宿のフロント業務を手伝うAIアシスタントです。
 台風で帰りの便が欠航になりそうな宿泊客を見つけ、延泊の提案を準備します。
@@ -274,40 +294,19 @@ def run_tool(name, args):
 
 # ---------- Gemini との通信 ----------
 
-def call_gemini(env, contents):
-    key = env.get("GEMINI_API_KEY", "")
-    model = env.get("GEMINI_MODEL", "") or "gemini-3.8-flash"
-    if not key:
-        sys.exit("env.txt に GEMINI_API_KEY を入れてください（Google AI Studio で無料で取得できます）。")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": contents,
-        "tools": [{"functionDeclarations": TOOLS}],
-    }
-    req = urllib.request.Request(
-        url, data=json.dumps(body).encode(), method="POST",
-        headers={"Content-Type": "application/json", "x-goog-api-key": key},
+def _safe_error_body(body):
+    """Keep diagnostic context, but redact credential-shaped text before logging."""
+    body = re.sub(r"AIza[A-Za-z0-9_-]+", "[redacted]", body)
+    body = re.sub(
+        r"(?i)(['\"]?(?:api[_-]?key|key|secret|token|authorization)['\"]?\s*[=:]\s*)"
+        r"(['\"]?)[^'\"\s,}]+\2",
+        r"\1[redacted]", body,
     )
-    # 混雑（503など）は一時的なことが多いので、少し待って自動でやり直す
-    retry_waits = [5, 15, 30, 60]
-    for attempt in range(len(retry_waits) + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=90) as res:
-                return json.loads(res.read().decode())
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 503, 504) and attempt < len(retry_waits):
-                wait = retry_waits[attempt]
-                print(f"  （Gemini が混雑中です［{e.code}］。{wait}秒待ってやり直します… {attempt + 1}/{len(retry_waits)}）")
-                time.sleep(wait)
-                continue
-            _gemini_error(e, model)
-        except urllib.error.URLError as e:
-            sys.exit(f"Gemini に接続できませんでした: {e.reason}")
+    body = re.sub(r"\b[A-Za-z0-9_/-]{24,}\b", "[redacted]", body)
+    return body[:300]
 
 
-def _gemini_error(e, model):
-    text = e.read().decode()
+def _gemini_error(e, model, body=""):
     hints = {
         400: "送った内容かAPIキーの形式に問題があります。",
         403: "APIキーが無効か、権限がありません。env.txt の GEMINI_API_KEY を確認してください。",
@@ -315,10 +314,259 @@ def _gemini_error(e, model):
         429: "無料枠の回数制限に達しました。数分待ってからもう一度実行してください。",
         503: "Gemini が混雑しています。数分おいてから実行するか、env.txt の GEMINI_MODEL を別のモデルに変えてください。",
     }
-    sys.exit(f"Gemini でエラーが起きました（{e.code}）: {hints.get(e.code, '')}\n{text[:800]}")
+    raise GeminiUnavailable(e.code, f"Gemini でエラーが起きました（{e.code}）: {hints.get(e.code, '')}")
+
+
+def _new_run_state(env, web):
+    started = time.monotonic()
+    return {
+        "started": started,
+        "deadline": started + _budget_seconds(env) if web else None,
+        "waits": (2, 5, 10) if web else (5, 15, 30, 60),
+        "model": env.get("GEMINI_MODEL") or "gemini-3.8-flash",
+        "fallbacks": [name.strip() for name in env.get("GEMINI_FALLBACK_MODELS", "").split(",") if name.strip()],
+        "completed_calls": 0,
+        "model_calls": 0,
+        "http_calls": 0,
+        "responses": [],
+        "replay": None,
+        "replay_index": 0,
+    }
+
+
+def _remaining(state):
+    if state["deadline"] is None:
+        return float("inf")
+    remaining = state["deadline"] - time.monotonic()
+    if remaining <= 0:
+        raise GeminiUnavailable(503, "Gemini の実行時間が上限に達しました。")
+    return remaining
+
+
+def call_gemini(env, contents):
+    state = _run_state.get() or _new_run_state(env, web=False)
+    key = env.get("GEMINI_API_KEY", "")
+    if not key:
+        raise GeminiUnavailable(None, "env.txt に GEMINI_API_KEY を入れてください（Google AI Studio で無料で取得できます）。")
+    body = {
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": contents,
+        "tools": [{"functionDeclarations": TOOLS}],
+    }
+    models = [state["model"]]
+    if state["completed_calls"] == 0:
+        models.extend(model for model in state["fallbacks"] if model != state["model"])
+    for index, model in enumerate(models):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode(), method="POST",
+            headers={"Content-Type": "application/json", "x-goog-api-key": key},
+        )
+        for attempt in range(len(state["waits"]) + 1):
+            try:
+                timeout = min(90, _remaining(state))
+                state["http_calls"] += 1
+                with urllib.request.urlopen(req, timeout=timeout) as res:
+                    response = json.loads(res.read().decode())
+                state["model"] = model
+                state["completed_calls"] += 1
+                log_decision("ai", "gemini_model_used", {"model": model})
+                return response
+            except urllib.error.HTTPError as e:
+                try:
+                    error_body = e.read().decode("utf-8", errors="replace")
+                finally:
+                    e.close()
+                if e.code == 429:
+                    logging.warning("Gemini 429 response: %s", _safe_error_body(error_body))
+                quota = e.code == 429 and any(
+                    marker in error_body.lower() for marker in ("quota", "resource_exhausted", "perday")
+                )
+                if quota:
+                    _gemini_error(e, model, error_body)
+                if e.code == 503 and index < len(models) - 1:
+                    break
+                if e.code in (429, 500, 503, 504) and attempt < len(state["waits"]):
+                    wait = state["waits"][attempt]
+                    if _remaining(state) <= wait:
+                        _gemini_error(e, model, error_body)
+                    print(f"  （Gemini が混雑中です［{e.code}］。{wait}秒待ってやり直します… {attempt + 1}/{len(state['waits'])}）")
+                    time.sleep(wait)
+                    continue
+                _gemini_error(e, model, error_body)
+            except urllib.error.URLError:
+                raise GeminiUnavailable(None, "Gemini に接続できませんでした。") from None
+    raise GeminiUnavailable(503, "Gemini が混雑しています。")
+
+
+def _replay_responses():
+    with open(REPLAY_PATH, encoding="utf-8") as file:
+        responses = json.load(file)
+    if not isinstance(responses, list) or not 1 <= len(responses) <= MAX_STEPS:
+        raise ValueError("Invalid Gemini replay file")
+    for index, response in enumerate(responses):
+        if not isinstance(response, dict) or not isinstance(response.get("candidates"), list) or not response["candidates"]:
+            raise ValueError("Invalid Gemini replay file")
+        content = response["candidates"][0].get("content") if isinstance(response["candidates"][0], dict) else None
+        if not isinstance(content, dict) or not isinstance(content.get("parts"), list) or not all(
+            isinstance(part, dict) and (
+                "functionCall" not in part or
+                (isinstance(part["functionCall"], dict)
+                 and isinstance(part["functionCall"].get("name"), str)
+                 and isinstance(part["functionCall"].get("args", {}), dict))
+            ) for part in content["parts"]
+        ):
+            raise ValueError("Invalid Gemini replay file")
+        if index < len(responses) - 1 and not any("functionCall" in part for part in content["parts"]):
+            raise ValueError("Invalid Gemini replay file")
+    if any("functionCall" in part for part in responses[-1]["candidates"][0]["content"]["parts"]):
+        raise ValueError("Invalid Gemini replay file")
+    return responses
+
+
+def replay_model(env, contents):
+    state = _run_state.get()
+    if state is None or state["replay"] is None:
+        raise GeminiUnavailable(None, "Gemini の再生記録を利用できません。")
+    index = state["replay_index"]
+    if index >= len(state["replay"]):
+        raise GeminiUnavailable(None, "Gemini の再生記録が途中で終わりました。")
+    state["replay_index"] += 1
+    return state["replay"][index]
+
+
+def _without_thought_signatures(value):
+    if isinstance(value, dict):
+        return {key: _without_thought_signatures(item)
+                for key, item in value.items() if key != "thoughtSignature"}
+    if isinstance(value, list):
+        return [_without_thought_signatures(item) for item in value]
+    return value
+
+
+def _response_strings(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _response_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _response_strings(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def _recording_contains_secret(responses, env):
+    secret_values = [env.get(name) for name in ("GEMINI_API_KEY", "PAYPAL_CLIENT_SECRET") if env.get(name)]
+    return any(
+        any(secret in value for secret in secret_values)
+        or re.search(r"AIza[A-Za-z0-9_-]{30,45}", value)
+        for response in responses for value in _response_strings(response)
+    )
+
+
+def _recording_secret_error():
+    reason = "記録を保存しませんでした：応答に認証情報が含まれる可能性があります。"
+    print(reason)
+    raise GeminiUnavailable(None, reason)
+
+
+def _save_recording(responses, env):
+    try:
+        if _recording_contains_secret(responses, env):
+            _recording_secret_error()
+        write_json(REPLAY_PATH, responses)
+    finally:
+        responses.clear()
+
+
+def _item_counts():
+    items = read_json(approvals_path(), [])
+    return (
+        sum(item.get("type") == "extension" for item in items),
+        sum(item.get("type") == "staff_note" for item in items),
+    )
+
+
+def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reason=None):
+    mode = mode or env.get("AI_MODE", "auto").strip().lower()
+    if record:
+        mode = "live"
+    if mode not in {"auto", "live", "replay"}:
+        raise GeminiUnavailable(None, "AI_MODE の設定が正しくありません。")
+    state = _new_run_state(env, web)
+    before_counts = _item_counts() if record else None
+    token = _run_state.set(state)
+    try:
+        if mode == "replay":
+            try:
+                state["replay"] = _replay_responses()
+            except (OSError, ValueError, KeyError, TypeError):
+                raise GeminiUnavailable(None, "Gemini の再生記録を利用できません。") from None
+            log_decision("ai", "replay_mode", {"reason": replay_reason or "AI_MODE=replay"})
+            run_agent(replay_model, env)
+            return "replay"
+
+        def recorded_model(model_env, contents):
+            state["model_calls"] += 1
+            response = (call_model or call_gemini)(model_env, contents)
+            if record:
+                state["responses"].append(_without_thought_signatures(response))
+                if _recording_contains_secret(state["responses"], env):
+                    state["responses"].clear()
+                    _recording_secret_error()
+            return response
+
+        try:
+            run_agent(recorded_model, env)
+        except GeminiUnavailable as original:
+            if mode != "auto" or read_json(approvals_path(), []):
+                raise
+            try:
+                state["replay"] = _replay_responses()
+            except (OSError, ValueError, KeyError, TypeError):
+                raise original from None
+            log_decision("ai", "replay_mode", {"reason": f"Gemini unavailable ({original.code or 'connection'})"})
+            run_agent(replay_model, env)
+            return "replay"
+        if record:
+            after_counts = _item_counts()
+            proposals = after_counts[0] - before_counts[0]
+            staff_notes = after_counts[1] - before_counts[1]
+            if proposals <= 0:
+                state["responses"].clear()
+                reason = "記録を保存しませんでした：この実行で延泊提案が作成されませんでした。"
+                print(reason)
+                raise GeminiUnavailable(None, reason)
+            _save_recording(state["responses"], env)
+            elapsed = time.monotonic() - state["started"]
+            gemini_calls = state["http_calls"] or state["model_calls"]
+            print(f"記録を保存しました：延泊提案 {proposals}件、スタッフ連絡 {staff_notes}件、"
+                  f"Gemini 呼び出し {gemini_calls}回、所要 {elapsed:.1f}秒。")
+        return "live"
+    finally:
+        _run_state.reset(token)
 
 
 def run_agent(call_model, env):
+    if _run_state.get() is not None:
+        return _run_agent(call_model, env)
+    state = _new_run_state(env, web=False)
+    if call_model is replay_model:
+        try:
+            state["replay"] = _replay_responses()
+        except (OSError, ValueError, KeyError, TypeError):
+            raise GeminiUnavailable(None, "Gemini の再生記録を利用できません。") from None
+    token = _run_state.set(state)
+    try:
+        if call_model is replay_model:
+            log_decision("ai", "replay_mode", {"reason": "recorded Gemini responses"})
+        return _run_agent(call_model, env)
+    finally:
+        _run_state.reset(token)
+
+
+def _run_agent(call_model, env):
     task = ("台風が接近しています。宿泊客全員について、帰りの便の公式情報を確認し、"
             "欠航で帰れない客には延泊を提案してください。SNSの情報も念のため確認してください。")
     contents = [{"role": "user", "parts": [{"text": task}]}]
@@ -328,7 +576,7 @@ def run_agent(call_model, env):
         response = call_model(env, contents)
         candidates = response.get("candidates") or []
         if not candidates:
-            sys.exit(f"AIから返事がありませんでした: {json.dumps(response, ensure_ascii=False)[:500]}")
+            raise GeminiUnavailable(None, "AIから返事がありませんでした。")
         content = candidates[0].get("content", {"role": "model", "parts": []})
         contents.append(content)  # AIの返事はそのまま会話に戻す（Gemini 3 の署名もここに含まれる）
 
@@ -363,7 +611,10 @@ def main():
         os.remove(approvals_path())
         print("前回の承認待ちリストを消しました。\n")
     env = load_env()
-    run_agent(call_gemini, env)
+    try:
+        run_ai(env, record="--record" in sys.argv)
+    except GeminiUnavailable as error:
+        sys.exit(str(error))
     print("\n次は  python3 approve.py  で、承認待ちリストを確認してください。")
 
 

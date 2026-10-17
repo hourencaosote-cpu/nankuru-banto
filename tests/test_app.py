@@ -142,6 +142,29 @@ class AppSafetyTests(unittest.TestCase):
         self.assertIn("Checked official flight DEMO-404 → cancelled", labels)
         self.assertIn("Read social posts → unverified, ignored", labels)
 
+    def test_auto_replay_is_disclosed_on_dashboard(self):
+        replay_file = self.data_dir / "replay" / "gemini_run.json"
+        replay_file.parent.mkdir()
+        replay_file.write_text(json.dumps([
+            {"candidates": [{"content": {"role": "model", "parts": [{"text": "Demo complete."}]}}]},
+        ]), encoding="utf-8")
+        with mock.patch.object(agent, "REPLAY_PATH", str(replay_file)), \
+             mock.patch.object(web_app, "load_env", return_value={"AI_MODE": "auto"}), \
+             mock.patch.object(agent, "call_gemini", side_effect=agent.GeminiUnavailable(503, "busy")), \
+             mock.patch("builtins.print"):
+            self.assertEqual(self._post("/run-ai").status_code, 302)
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Demo replay — recorded Gemini responses. Safety gate, approvals and PayPal run live.", page)
+        self.assertIn("Demo replay used recorded Gemini responses", page)
+
+    def test_quota_failure_uses_specific_english_message(self):
+        with mock.patch.object(web_app, "load_env", return_value={"AI_MODE": "live"}), \
+             mock.patch.object(agent, "call_gemini", side_effect=agent.GeminiUnavailable(429, "quota")), \
+             mock.patch("builtins.print"):
+            self.assertEqual(self._post("/run-ai").status_code, 302)
+        self.assertIn("Gemini usage limit reached (429). No approval was performed.",
+                      self.client.get("/").get_data(as_text=True))
+
     def test_approved_extension_consumes_room_inventory(self):
         guest_data = json.loads((self.data_dir / "guests.json").read_text(encoding="utf-8"))
         guest_data["vacant_rooms_for_extension"] = 1

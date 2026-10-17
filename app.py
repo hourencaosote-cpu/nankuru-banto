@@ -81,6 +81,8 @@ ACTION_LABELS = {
     "rate_limit_blocked": "Demo rate limit reached",
     "ai_capacity_blocked": "AI capacity is busy",
     "workspace_busy": "Previous action still running",
+    "replay_mode": "Demo replay used recorded Gemini responses",
+    "gemini_model_used": "Gemini model responded",
 }
 
 GATE_RULES = [
@@ -425,6 +427,11 @@ def build_dashboard():
     flight_data = read_json(os.path.join(DATA_DIR, "flights.json"), {})
     approvals = read_json(approvals_path(), [])
     log_entries = _read_log_entries()
+    last_ai_source = next(
+        (entry.get("action") for entry in reversed(log_entries)
+         if entry.get("action") in {"replay_mode", "gemini_model_used"}),
+        None,
+    )
     base_time = next(
         (entry.get("time") for entry in reversed(log_entries) if entry.get("action") == "reset_demo" and entry.get("time")),
         log_entries[0].get("time") if log_entries else None,
@@ -522,6 +529,7 @@ def build_dashboard():
         "social_posts": flight_data.get("unverified_social_posts", []),
         "activity": [_log_view(entry, flights, len(guests), guest_names) for entry in reversed(log_entries[-18:])],
         "status_labels": STATUS_LABELS,
+        "replay_active": last_ai_source == "replay_mode",
     }
 
 
@@ -596,12 +604,32 @@ def run_ai_check():
                     counted = True
                 return agent.call_gemini(model_env, contents)
 
-            agent.run_agent(limited_gemini, env)
+            try:
+                agent.run_ai(env, call_model=limited_gemini, web=True)
+            except DemoLimitReached as limit_error:
+                try:
+                    agent.run_ai(
+                        env, mode="replay", web=True,
+                        replay_reason=f"AI demo limit ({limit_error.scope})",
+                    )
+                except agent.GeminiUnavailable:
+                    raise limit_error from None
         finally:
             AI_SEMAPHORE.release()
     except DemoLimitReached as error:
         log_decision("system", "rate_limit_blocked", {"operation": error.operation, "scope": error.scope})
         flash(str(error), "error")
+    except agent.GeminiUnavailable as error:
+        log_decision("system", "ai_check_failed", {"code": error.code})
+        if error.code == 429:
+            message = "Gemini usage limit reached (429). No approval was performed."
+        elif error.code == 503:
+            message = "Gemini is busy right now (503). No approval was performed."
+        elif error.code is None:
+            message = "Gemini is unavailable or not configured. No approval was performed."
+        else:
+            message = f"Gemini returned an error ({error.code}). No approval was performed."
+        flash(message, "error")
     except (SystemExit, Exception) as error:
         log_decision("system", "ai_check_failed", {"error_type": type(error).__name__})
         flash("The AI check could not finish. No approval was performed. Please try again shortly.", "error")

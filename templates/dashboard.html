@@ -53,6 +53,10 @@
       </div>
     </header>
 
+    {% if replay_active %}
+      <div class="flash-stack" role="status"><div class="flash flash-info">Demo replay — recorded Gemini responses. Safety gate, approvals and PayPal run live.</div></div>
+    {% endif %}
+
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         <div class="flash-stack" aria-live="polite">
