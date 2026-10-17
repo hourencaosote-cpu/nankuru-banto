@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime
 
-from common import APPROVALS_PATH, DATA_DIR, load_env, log_decision, read_json, write_json
+from common import DATA_DIR, approvals_path, load_env, log_decision, read_json, write_json
 
 MAX_STEPS = 20            # AI が道具を使える回数の上限（暴走防止）
 MAX_NIGHTS = 3            # 延泊は最大3泊まで
@@ -156,7 +156,7 @@ def price_line(language, nights, amount, discount):
 
 
 def _approvals():
-    return read_json(APPROVALS_PATH, [])
+    return read_json(approvals_path(), [])
 
 
 def tool_propose_stay_extension(args):
@@ -216,7 +216,7 @@ def tool_propose_stay_extension(args):
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     queue.append(item)
-    write_json(APPROVALS_PATH, queue)
+    write_json(approvals_path(), queue)
     log_decision("ai", "proposed_extension", item)
     return {"accepted": True, "proposal_id": item["id"], "amount_usd": amount,
             "status": "スタッフの承認待ち（まだ何も実行されていません）"}
@@ -247,7 +247,7 @@ def tool_notify_staff(args):
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
     queue.append(item)
-    write_json(APPROVALS_PATH, queue)
+    write_json(approvals_path(), queue)
     log_decision("ai", "notified_staff", item)
     return {"accepted": True, "status": "スタッフへの連絡リストに追加しました。"}
 
@@ -359,8 +359,8 @@ def run_agent(call_model, env):
 
 
 def main():
-    if "--reset" in sys.argv and os.path.exists(APPROVALS_PATH):
-        os.remove(APPROVALS_PATH)
+    if "--reset" in sys.argv and os.path.exists(approvals_path()):
+        os.remove(approvals_path())
         print("前回の承認待ちリストを消しました。\n")
     env = load_env()
     run_agent(call_gemini, env)

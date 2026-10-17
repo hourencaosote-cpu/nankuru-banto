@@ -5,3 +5,4 @@ __pycache__/
 logs/
 data/approvals.json
 data/archive/
+data/workspaces/

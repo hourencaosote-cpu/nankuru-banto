@@ -4,7 +4,7 @@
 使い方:  python3 check_payments.py
 """
 
-from common import APPROVALS_PATH, load_env, log_decision, read_json, write_json
+from common import approvals_path, load_env, log_decision, read_json, write_json
 from paypal_tools import _get_token, get_invoice_status
 
 PAID = ("PAID", "MARKED_AS_PAID")
@@ -12,7 +12,7 @@ PAID = ("PAID", "MARKED_AS_PAID")
 
 def check_payments(env=None):
     """送信済み請求書を確認し、支払い済みの延泊を確定する。"""
-    queue = read_json(APPROVALS_PATH, [])
+    queue = read_json(approvals_path(), [])
     sent = [item for item in queue if item.get("type") == "extension" and item.get("status") == "sent"]
     result = {
         "checked": 0,
@@ -55,12 +55,12 @@ def check_payments(env=None):
                 "payment_pending",
                 {"id": item["id"], "invoice_id": item["invoice_id"], "paypal_status": status},
             )
-    write_json(APPROVALS_PATH, queue)
+    write_json(approvals_path(), queue)
     return result
 
 
 def main():
-    queue = read_json(APPROVALS_PATH, [])
+    queue = read_json(approvals_path(), [])
     sent = [item for item in queue if item.get("type") == "extension" and item.get("status") == "sent"]
     if not sent:
         print("支払い待ちの請求書はありません。")
@@ -75,7 +75,7 @@ def main():
         for item in result["errors"]:
             print(f"  ! {item['guest_name']} 様：PayPal の確認に失敗しました。この請求書は次回もう一度確認してください。")
 
-    confirmed = [item for item in read_json(APPROVALS_PATH, []) if item.get("status") == "confirmed"]
+    confirmed = [item for item in read_json(approvals_path(), []) if item.get("status") == "confirmed"]
     if confirmed:
         print("\n延泊が確定したお客様（スタッフは部屋の延長手続きをしてください）")
         for item in confirmed:

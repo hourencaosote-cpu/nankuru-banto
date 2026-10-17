@@ -356,6 +356,7 @@ h1, h2, h3, .metric-card strong, .price-block strong, .loading-card strong { fon
 .timeline-item strong { display: block; color: #354d56; font-size: 0.75rem; line-height: 1.3; }
 .timeline-item p { margin: 3px 0 1px; color: var(--muted); font-size: 0.67rem; }
 .timeline-item time { color: var(--muted); font-size: 0.63rem; }
+.workspace-notice { margin: 0; padding: 4px 20px 22px; color: var(--muted); font-size: 0.7rem; text-align: center; }
 
 .loading-overlay[hidden] { display: none; }
 .loading-overlay { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(35, 48, 94, 0.72); backdrop-filter: blur(5px); }

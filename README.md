@@ -133,6 +133,7 @@ tests/              Offline tests
 
 ## Notes
 
+- Each visitor has a private demo workspace, cleared after 24 hours of inactivity; demo AI runs and invoice creation have per-visitor and daily limits.
 - **All data is fictional.** Guests, flights and the inn are invented. No real guest data is sent to any AI service.
 - **Sandbox only.** The PayPal base URL is fixed to the Sandbox.
 - The app never forecasts weather. In Japan, weather forecasting is licensed under the Meteorological Service Act; the agent only reads official notices.

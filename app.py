@@ -3,17 +3,23 @@
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timezone
+from functools import wraps
 
-from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
 
 import agent
 from approve import approve_extension, defer_item, reject_extension, resolve_staff_note
 from check_payments import check_payments as check_payments_action
-from common import APPROVALS_PATH, DATA_DIR, LOG_PATH, load_env, log_decision, read_json, write_json
+from common import (
+    DATA_DIR, approvals_path, load_env, log_decision, log_path, read_json,
+    reset_workspace_paths, set_workspace_paths, write_json,
+)
 
 
 app = Flask(__name__)
@@ -25,7 +31,20 @@ app.config.update(
     SESSION_COOKIE_SECURE="RENDER" in os.environ,
 )
 
-ACTION_LOCK = threading.Lock()
+WORKSPACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+WORKSPACE_LOCKS = {}
+ACTIVE_REQUESTS = {}
+WORKSPACE_STATE_LOCK = threading.Lock()
+LIMITS_LOCK = threading.Lock()
+AI_SEMAPHORE = threading.BoundedSemaphore(2)
+WORKSPACE_TTL_SECONDS = 24 * 60 * 60
+MAX_WORKSPACES = 500
+LIMIT_DEFAULTS = {
+    "MAX_AI_RUNS_PER_HOUR_PER_VISITOR": 5,
+    "MAX_AI_RUNS_PER_DAY": 50,
+    "MAX_INVOICES_PER_DAY_PER_VISITOR": 10,
+    "MAX_INVOICES_PER_DAY": 200,
+}
 ACTIVE_EXTENSION_STATUSES = {"pending", "approved", "sent", "confirmed"}
 
 STATUS_LABELS = {
@@ -59,6 +78,9 @@ ACTION_LABELS = {
     "ai_check_failed": "AI check failed safely",
     "web_action_failed": "Web action failed safely",
     "reset_demo": "Demo state archived and reset",
+    "rate_limit_blocked": "Demo rate limit reached",
+    "ai_capacity_blocked": "AI capacity is busy",
+    "workspace_busy": "Previous action still running",
 }
 
 GATE_RULES = [
@@ -69,6 +91,205 @@ GATE_RULES = [
     "No duplicate proposal for the same guest",
     "Guest message draft is required",
 ]
+
+
+class DemoLimitReached(Exception):
+    def __init__(self, message, operation, scope):
+        super().__init__(message)
+        self.operation = operation
+        self.scope = scope
+
+
+def _workspaces_dir():
+    return os.path.join(DATA_DIR, "workspaces")
+
+
+def _cleanup_workspaces_locked(now=None):
+    root = _workspaces_dir()
+    if not os.path.isdir(root):
+        return
+    now = time.time() if now is None else now
+    remaining = []
+    protected_count = 0
+    deleted_ids = set()
+    for entry in os.scandir(root):
+        if not WORKSPACE_ID_PATTERN.fullmatch(entry.name) or not entry.is_dir(follow_symlinks=False):
+            continue
+        workspace_lock = WORKSPACE_LOCKS.get(entry.name)
+        if ACTIVE_REQUESTS.get(entry.name, 0) or (workspace_lock is not None and workspace_lock.locked()):
+            protected_count += 1
+            continue
+        modified = entry.stat(follow_symlinks=False).st_mtime
+        if now - modified >= WORKSPACE_TTL_SECONDS:
+            shutil.rmtree(entry.path)
+            WORKSPACE_LOCKS.pop(entry.name, None)
+            deleted_ids.add(entry.name)
+        else:
+            remaining.append((modified, entry))
+    excess = max(0, len(remaining) + protected_count - MAX_WORKSPACES)
+    for _, entry in sorted(remaining, key=lambda pair: pair[0])[:excess]:
+        shutil.rmtree(entry.path)
+        WORKSPACE_LOCKS.pop(entry.name, None)
+        deleted_ids.add(entry.name)
+    if deleted_ids:
+        _forget_limit_visitors(deleted_ids)
+
+
+def cleanup_workspaces(now=None):
+    with WORKSPACE_STATE_LOCK:
+        _cleanup_workspaces_locked(now)
+
+
+def _new_workspace_id(root):
+    while True:
+        workspace_id = secrets.token_hex(16)
+        if not os.path.lexists(os.path.join(root, workspace_id)):
+            return workspace_id
+
+
+@app.before_request
+def bind_workspace():
+    if request.endpoint == "healthz":
+        return
+    with WORKSPACE_STATE_LOCK:
+        root = _workspaces_dir()
+        workspace_id = session.get("workspace_id")
+        valid = isinstance(workspace_id, str) and WORKSPACE_ID_PATTERN.fullmatch(workspace_id) is not None
+        workspace_dir = os.path.join(root, workspace_id) if valid else None
+        expired = (
+            valid and os.path.isdir(workspace_dir) and not os.path.islink(workspace_dir)
+            and time.time() - os.path.getmtime(workspace_dir) >= WORKSPACE_TTL_SECONDS
+        )
+        created = False
+        if not valid or not os.path.isdir(workspace_dir) or os.path.islink(workspace_dir) or expired:
+            _cleanup_workspaces_locked()
+            os.makedirs(root, exist_ok=True)
+            workspace_id = _new_workspace_id(root)
+            workspace_dir = os.path.join(root, workspace_id)
+            session["workspace_id"] = workspace_id
+            created = True
+        os.makedirs(workspace_dir, exist_ok=True)
+        os.utime(workspace_dir, None)
+        ACTIVE_REQUESTS[workspace_id] = ACTIVE_REQUESTS.get(workspace_id, 0) + 1
+        g.workspace_id = workspace_id
+        g.workspace_lock = WORKSPACE_LOCKS.setdefault(workspace_id, threading.Lock())
+        g.path_tokens = set_workspace_paths(workspace_dir)
+        if created:
+            _cleanup_workspaces_locked()
+
+
+@app.teardown_request
+def unbind_workspace(_error):
+    tokens = getattr(g, "path_tokens", None)
+    if tokens is None:
+        return
+    reset_workspace_paths(tokens)
+    workspace_id = g.workspace_id
+    with WORKSPACE_STATE_LOCK:
+        ACTIVE_REQUESTS[workspace_id] -= 1
+        if not ACTIVE_REQUESTS[workspace_id]:
+            del ACTIVE_REQUESTS[workspace_id]
+
+
+def _limit_value(name):
+    try:
+        return max(0, int(os.environ.get(name, LIMIT_DEFAULTS[name])))
+    except ValueError:
+        return LIMIT_DEFAULTS[name]
+
+
+def _limits_path():
+    return os.path.join(_workspaces_dir(), "_limits.json")
+
+
+def _load_limits(day, now):
+    limits = read_json(_limits_path(), {})
+    visitors = limits.setdefault("visitors", {})
+    if limits.get("day") != day:
+        limits["day"] = day
+        limits["ai_total"] = 0
+        limits["invoice_total"] = 0
+        for workspace_id, visitor in list(visitors.items()):
+            visitor["invoice_total"] = 0
+            visitor["ai_times"] = [stamp for stamp in visitor.get("ai_times", []) if stamp > now - 3600]
+            if not visitor["ai_times"]:
+                del visitors[workspace_id]
+    limits.setdefault("ai_total", 0)
+    limits.setdefault("invoice_total", 0)
+    return limits
+
+
+def _save_limits(limits):
+    write_json(_limits_path(), limits)
+
+
+def _forget_limit_visitors(workspace_ids):
+    with LIMITS_LOCK:
+        limits = read_json(_limits_path(), {})
+        visitors = limits.get("visitors", {})
+        removed = False
+        for workspace_id in workspace_ids:
+            if workspace_id in visitors:
+                del visitors[workspace_id]
+                removed = True
+        if removed:
+            _save_limits(limits)
+
+
+def _reserve_limit(operation, workspace_id):
+    now = time.time()
+    day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+    with LIMITS_LOCK:
+        limits = _load_limits(day, now)
+        visitor = limits["visitors"].setdefault(workspace_id, {"ai_times": [], "invoice_total": 0})
+        if operation == "ai":
+            visitor["ai_times"] = [stamp for stamp in visitor.get("ai_times", []) if stamp > now - 3600]
+            if len(visitor["ai_times"]) >= _limit_value("MAX_AI_RUNS_PER_HOUR_PER_VISITOR"):
+                raise DemoLimitReached("You have reached the AI demo limit for this hour. Please try again later.", operation, "visitor_hour")
+            if limits["ai_total"] >= _limit_value("MAX_AI_RUNS_PER_DAY"):
+                raise DemoLimitReached("Demo limit reached for today. Please try again tomorrow.", operation, "global_day")
+            visitor["ai_times"].append(now)
+            limits["ai_total"] += 1
+        else:
+            if visitor.get("invoice_total", 0) >= _limit_value("MAX_INVOICES_PER_DAY_PER_VISITOR"):
+                raise DemoLimitReached("You have reached today's invoice demo limit. Please try again tomorrow.", operation, "visitor_day")
+            if limits["invoice_total"] >= _limit_value("MAX_INVOICES_PER_DAY"):
+                raise DemoLimitReached("Demo invoice limit reached for today. Please try again tomorrow.", operation, "global_day")
+            visitor["invoice_total"] = visitor.get("invoice_total", 0) + 1
+            limits["invoice_total"] += 1
+        _save_limits(limits)
+    return day
+
+
+def _release_invoice_limit(workspace_id, day):
+    with LIMITS_LOCK:
+        limits = read_json(_limits_path(), {})
+        if limits.get("day") != day:
+            return
+        visitor = limits.get("visitors", {}).get(workspace_id, {})
+        visitor["invoice_total"] = max(0, visitor.get("invoice_total", 0) - 1)
+        limits["invoice_total"] = max(0, limits.get("invoice_total", 0) - 1)
+        _save_limits(limits)
+
+
+class InvoiceQuota:
+    def __init__(self, workspace_id):
+        self.workspace_id = workspace_id
+        self.day = None
+        self.created = False
+
+    def reserve(self):
+        self.day = _reserve_limit("invoice", self.workspace_id)
+
+    def mark_created(self):
+        self.created = True
+
+    def release_if_unused(self):
+        if self.day is not None and not self.created:
+            _release_invoice_limit(self.workspace_id, self.day)
+
+
+cleanup_workspaces()
 
 
 def _csrf_token():
@@ -113,15 +334,17 @@ def format_short_time(value, as_of=None, base_time=None):
 
 
 def _read_log_entries():
-    if not os.path.exists(LOG_PATH):
-        return []
+    path = log_path()
     entries = []
-    with open(LOG_PATH, encoding="utf-8") as log_file:
-        for line in log_file:
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    try:
+        with open(path, encoding="utf-8") as log_file:
+            for line in log_file:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        return []
     return entries
 
 
@@ -200,7 +423,7 @@ def _log_view(entry, flights, guest_count, guest_names):
 def build_dashboard():
     guest_data = read_json(os.path.join(DATA_DIR, "guests.json"), {})
     flight_data = read_json(os.path.join(DATA_DIR, "flights.json"), {})
-    approvals = read_json(APPROVALS_PATH, [])
+    approvals = read_json(approvals_path(), [])
     log_entries = _read_log_entries()
     base_time = next(
         (entry.get("time") for entry in reversed(log_entries) if entry.get("action") == "reset_demo" and entry.get("time")),
@@ -218,6 +441,8 @@ def build_dashboard():
         if status == "cancelled":
             cancelled_count += 1
         response, response_style = _guest_response(guest, approvals, status)
+        if not approvals and not log_entries:
+            response, response_style = "Awaiting AI review", "warning"
         guest_rows.append(
             {
                 **guest,
@@ -302,26 +527,44 @@ def build_dashboard():
 
 def archive_demo_state():
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    archive_dir = os.path.join(DATA_DIR, "archive", timestamp)
+    approvals_file = approvals_path()
+    log_file = log_path()
+    archive_dir = os.path.join(os.path.dirname(approvals_file), "archive", timestamp)
     os.makedirs(archive_dir, exist_ok=False)
 
-    if not os.path.exists(APPROVALS_PATH):
-        write_json(APPROVALS_PATH, [])
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-    if not os.path.exists(LOG_PATH):
-        open(LOG_PATH, "w", encoding="utf-8").close()
+    if not os.path.exists(approvals_file):
+        write_json(approvals_file, [])
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    if not os.path.exists(log_file):
+        open(log_file, "w", encoding="utf-8").close()
 
-    log_decision("human", "reset_demo", {"archive": f"data/archive/{timestamp}"})
-    for source in (APPROVALS_PATH, LOG_PATH):
+    log_decision("human", "reset_demo", {"archive": f"archive/{timestamp}"})
+    for source in (approvals_file, log_file):
         shutil.move(source, os.path.join(archive_dir, os.path.basename(source)))
 
-    write_json(APPROVALS_PATH, [])
-    open(LOG_PATH, "w", encoding="utf-8").close()
+    write_json(approvals_file, [])
+    open(log_file, "w", encoding="utf-8").close()
     return timestamp
 
 
 def _record_web_failure(action, error):
     log_decision("system", "web_action_failed", {"action": action, "error_type": type(error).__name__})
+
+
+def workspace_action(action):
+    def decorate(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            if not g.workspace_lock.acquire(blocking=False):
+                log_decision("system", "workspace_busy", {"action": action})
+                flash("Your previous action is still running. Please wait a moment and refresh.", "error")
+                return redirect(url_for("dashboard") + "#review-queue")
+            try:
+                return view(*args, **kwargs)
+            finally:
+                g.workspace_lock.release()
+        return wrapped
+    return decorate
 
 
 @app.get("/")
@@ -335,11 +578,30 @@ def healthz():
 
 
 @app.post("/run-ai")
+@workspace_action("run_ai_check")
 def run_ai_check():
     try:
-        with ACTION_LOCK:
+        if not AI_SEMAPHORE.acquire(blocking=False):
+            log_decision("system", "ai_capacity_blocked", {})
+            flash("Other visitors are running the AI right now. Please try again in a minute.", "error")
+            return redirect(url_for("dashboard") + "#review-queue")
+        try:
             env = load_env()
-            agent.run_agent(agent.call_gemini, env)
+            counted = False
+
+            def limited_gemini(model_env, contents):
+                nonlocal counted
+                if not counted:
+                    _reserve_limit("ai", g.workspace_id)
+                    counted = True
+                return agent.call_gemini(model_env, contents)
+
+            agent.run_agent(limited_gemini, env)
+        finally:
+            AI_SEMAPHORE.release()
+    except DemoLimitReached as error:
+        log_decision("system", "rate_limit_blocked", {"operation": error.operation, "scope": error.scope})
+        flash(str(error), "error")
     except (SystemExit, Exception) as error:
         log_decision("system", "ai_check_failed", {"error_type": type(error).__name__})
         flash("The AI check could not finish. No approval was performed. Please try again shortly.", "error")
@@ -349,10 +611,10 @@ def run_ai_check():
 
 
 @app.post("/reset-demo")
+@workspace_action("reset_demo")
 def reset_demo():
     try:
-        with ACTION_LOCK:
-            archive_demo_state()
+        archive_demo_state()
     except OSError as error:
         _record_web_failure("reset_demo", error)
         flash("The demo could not be reset. Existing data was left in place where possible.", "error")
@@ -362,10 +624,19 @@ def reset_demo():
 
 
 @app.post("/proposals/<item_id>/approve")
+@workspace_action("approve_proposal")
 def approve_proposal(item_id):
+    quota = InvoiceQuota(g.workspace_id)
     try:
-        with ACTION_LOCK:
-            item, _amount = approve_extension(item_id)
+        try:
+            item, _amount = approve_extension(
+                item_id, before_create=quota.reserve, on_invoice_created=quota.mark_created,
+            )
+        finally:
+            quota.release_if_unused()
+    except DemoLimitReached as error:
+        log_decision("system", "rate_limit_blocked", {"operation": error.operation, "scope": error.scope})
+        flash(str(error), "error")
     except ValueError as error:
         flash(str(error), "error")
     except (SystemExit, RuntimeError) as error:
@@ -380,10 +651,10 @@ def approve_proposal(item_id):
 
 
 @app.post("/proposals/<item_id>/reject")
+@workspace_action("reject_proposal")
 def reject_proposal(item_id):
     try:
-        with ACTION_LOCK:
-            reject_extension(item_id)
+        reject_extension(item_id)
     except ValueError as error:
         flash(str(error), "error")
     else:
@@ -392,6 +663,7 @@ def reject_proposal(item_id):
 
 
 @app.post("/items/<item_id>/later")
+@workspace_action("review_later")
 def review_later(item_id):
     try:
         defer_item(item_id)
@@ -403,10 +675,10 @@ def review_later(item_id):
 
 
 @app.post("/staff-notes/<item_id>/handle")
+@workspace_action("handle_staff_note")
 def handle_staff_note(item_id):
     try:
-        with ACTION_LOCK:
-            resolve_staff_note(item_id, handled=True)
+        resolve_staff_note(item_id, handled=True)
     except ValueError as error:
         flash(str(error), "error")
     else:
@@ -415,10 +687,10 @@ def handle_staff_note(item_id):
 
 
 @app.post("/check-payments")
+@workspace_action("check_payments")
 def check_payments():
     try:
-        with ACTION_LOCK:
-            result = check_payments_action()
+        result = check_payments_action()
     except (SystemExit, RuntimeError) as error:
         _record_web_failure("check_payments", error)
         flash("PayPal could not be reached. Existing invoice statuses were left unchanged.", "error")

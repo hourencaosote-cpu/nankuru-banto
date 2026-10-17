@@ -25,23 +25,19 @@ class AppSafetyTests(unittest.TestCase):
         self.log_dir.mkdir()
         shutil.copy(ROOT / "data" / "guests.json", self.data_dir / "guests.json")
         shutil.copy(ROOT / "data" / "flights.json", self.data_dir / "flights.json")
-        self.approvals_path = self.data_dir / "approvals.json"
-        self.log_path = self.log_dir / "decision_log.jsonl"
+        self.workspace_id = "a" * 32
+        self.workspace_dir = self.data_dir / "workspaces" / self.workspace_id
+        self.workspace_dir.mkdir(parents=True)
+        self.approvals_path = self.workspace_dir / "approvals.json"
+        self.log_path = self.workspace_dir / "decision_log.jsonl"
         self._write_approvals([])
         self.log_path.write_text("", encoding="utf-8")
 
         replacements = (
             (agent, "DATA_DIR", str(self.data_dir)),
-            (agent, "APPROVALS_PATH", str(self.approvals_path)),
-            (approve, "APPROVALS_PATH", str(self.approvals_path)),
-            (check_payments, "APPROVALS_PATH", str(self.approvals_path)),
             (common, "DATA_DIR", str(self.data_dir)),
-            (common, "APPROVALS_PATH", str(self.approvals_path)),
             (common, "LOG_DIR", str(self.log_dir)),
-            (common, "LOG_PATH", str(self.log_path)),
             (web_app, "DATA_DIR", str(self.data_dir)),
-            (web_app, "APPROVALS_PATH", str(self.approvals_path)),
-            (web_app, "LOG_PATH", str(self.log_path)),
         )
         self.patchers = [mock.patch.object(module, name, value) for module, name, value in replacements]
         self.patchers.extend(
@@ -54,11 +50,15 @@ class AppSafetyTests(unittest.TestCase):
         )
         for patcher in self.patchers:
             patcher.start()
+        self.path_tokens = common.set_workspace_paths(str(self.workspace_dir))
 
         web_app.app.config.update(TESTING=True, SECRET_KEY="test-only-secret")
         self.client = web_app.app.test_client()
+        with self.client.session_transaction() as session_data:
+            session_data["workspace_id"] = self.workspace_id
 
     def tearDown(self):
+        common.reset_workspace_paths(self.path_tokens)
         for patcher in reversed(self.patchers):
             patcher.stop()
         self.temp_dir.cleanup()
@@ -207,7 +207,7 @@ class AppSafetyTests(unittest.TestCase):
         send_invoice.assert_not_called()
         self.assertEqual(self._read_approvals(), [])
         self.assertEqual(self.log_path.read_text(encoding="utf-8"), "")
-        archives = list((self.data_dir / "archive").iterdir())
+        archives = list((self.workspace_dir / "archive").iterdir())
         self.assertEqual(len(archives), 1)
         self.assertTrue((archives[0] / "approvals.json").exists())
         archived_log = (archives[0] / "decision_log.jsonl").read_text(encoding="utf-8")

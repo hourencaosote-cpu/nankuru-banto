@@ -8,7 +8,7 @@
 使い方:  python3 approve.py
 """
 
-from common import APPROVALS_PATH, load_env, log_decision, read_json, write_json
+from common import approvals_path, load_env, log_decision, read_json, write_json
 from paypal_tools import create_extension_invoice, send_invoice
 
 
@@ -33,9 +33,9 @@ def _find_item(queue, item_id):
     raise ValueError(f"Approval item '{item_id}' was not found.")
 
 
-def approve_extension(item_id, env=None):
+def approve_extension(item_id, env=None, before_create=None, on_invoice_created=None):
     """人が承認した延泊だけを PayPal sandbox の請求書にする。"""
-    queue = read_json(APPROVALS_PATH, [])
+    queue = read_json(approvals_path(), [])
     item = _find_item(queue, item_id)
     if item.get("type") != "extension":
         raise ValueError("Only stay-extension proposals can be approved here.")
@@ -49,6 +49,8 @@ def approve_extension(item_id, env=None):
 
     if not resumed_draft:
         message = final_message(item)
+        if before_create:
+            before_create()
         try:
             invoice_id, amount = create_extension_invoice(
                 env,
@@ -61,9 +63,11 @@ def approve_extension(item_id, env=None):
         except (RuntimeError, SystemExit):
             log_decision("human", "approval_failed", {"id": item_id, "stage": "create_invoice"})
             raise
+        if on_invoice_created:
+            on_invoice_created()
         item["invoice_id"] = invoice_id
         item["status"] = "approved"
-        write_json(APPROVALS_PATH, queue)
+        write_json(approvals_path(), queue)
 
     if buyer_email:
         try:
@@ -79,7 +83,7 @@ def approve_extension(item_id, env=None):
         item["paypal_status"] = invoice_status
         item["pay_url"] = pay_url
 
-    write_json(APPROVALS_PATH, queue)
+    write_json(approvals_path(), queue)
     log_decision(
         "human",
         "sent_extension_invoice" if resumed_draft and buyer_email else "approved_extension",
@@ -89,18 +93,18 @@ def approve_extension(item_id, env=None):
 
 
 def reject_extension(item_id):
-    queue = read_json(APPROVALS_PATH, [])
+    queue = read_json(approvals_path(), [])
     item = _find_item(queue, item_id)
     if item.get("type") != "extension" or item.get("status") != "pending":
         raise ValueError("This proposal is no longer waiting for a decision.")
     item["status"] = "rejected"
-    write_json(APPROVALS_PATH, queue)
+    write_json(approvals_path(), queue)
     log_decision("human", "rejected_extension", {"id": item_id})
     return item
 
 
 def defer_item(item_id):
-    queue = read_json(APPROVALS_PATH, [])
+    queue = read_json(approvals_path(), [])
     item = _find_item(queue, item_id)
     if item.get("status") != "pending":
         raise ValueError("This item is no longer waiting for a decision.")
@@ -109,18 +113,18 @@ def defer_item(item_id):
 
 
 def resolve_staff_note(item_id, handled=True):
-    queue = read_json(APPROVALS_PATH, [])
+    queue = read_json(approvals_path(), [])
     item = _find_item(queue, item_id)
     if item.get("type") != "staff_note" or item.get("status") != "pending":
         raise ValueError("This staff note is no longer waiting for a decision.")
     item["status"] = "acknowledged" if handled else "dismissed"
-    write_json(APPROVALS_PATH, queue)
+    write_json(approvals_path(), queue)
     log_decision("human", item["status"], {"id": item_id})
     return item
 
 
 def main():
-    queue = read_json(APPROVALS_PATH, [])
+    queue = read_json(approvals_path(), [])
     pending = [item for item in queue if item["status"] == "pending"]
     if not pending:
         print("承認待ちの提案はありません。先に  python3 agent.py  を実行してください。")
@@ -150,7 +154,7 @@ def main():
                     item, amount = approve_extension(item["id"], env=env)
                 except RuntimeError as e:
                     print(f"  PayPal でエラーが起きました。\n  {e}")
-                    current = _find_item(read_json(APPROVALS_PATH, []), item["id"])
+                    current = _find_item(read_json(approvals_path(), []), item["id"])
                     if "invoice_id" not in current:
                         print("  この件は承認待ちのまま残します。")
                         continue
