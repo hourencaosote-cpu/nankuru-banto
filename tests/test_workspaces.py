@@ -216,6 +216,20 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self._queue(b_id)[0]["status"], "pending")
         self.assertIn("invoice limit reached", b.get("/").get_data(as_text=True))
 
+    def test_cannot_record_another_visitors_invoice(self):
+        a, a_id, a_csrf = self._client()
+        _b, b_id, _b_csrf = self._client()
+        foreign = self._pending("P001")
+        foreign.update(status="sent", invoice_id="INV-FOREIGN")
+        self._queue_path(b_id).write_text(json.dumps([foreign]), encoding="utf-8")
+
+        with mock.patch.object(web_app, "record_invoice_payment") as payment:
+            self.assertEqual(self._post(a, "/proposals/P001/record-sandbox-payment", a_csrf).status_code, 302)
+            self.assertEqual(self._post(a, "/proposals/INV-FOREIGN/record-sandbox-payment", a_csrf).status_code, 302)
+        payment.assert_not_called()
+        self.assertEqual(self._queue(a_id), [])
+        self.assertEqual(self._queue(b_id)[0]["status"], "sent")
+
     def test_failed_invoice_creation_releases_reserved_slot(self):
         client, workspace_id, csrf = self._client()
         self._queue_path(workspace_id).write_text(json.dumps([self._pending()]), encoding="utf-8")
@@ -340,6 +354,7 @@ class WorkspaceTests(unittest.TestCase):
             "/items/P001/later": "review_later",
             "/staff-notes/P001/handle": "handle_staff_note",
             "/check-payments": "check_payments",
+            "/proposals/P001/record-sandbox-payment": "record_sandbox_payment",
         }
         lock.acquire()
         try:

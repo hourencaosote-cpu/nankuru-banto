@@ -76,6 +76,22 @@ class RenderFoundationTests(unittest.TestCase):
 
         self.assertEqual(call.call_args.kwargs["body"]["invoicer"], {"business_name": "Nankuru Demo Inn"})
 
+    def test_record_invoice_payment_uses_sandbox_v2_external_payment(self):
+        with mock.patch.object(paypal_tools, "_get_token", return_value="test-token"), \
+             mock.patch.object(paypal_tools, "_call", return_value=(200, {"payment_id": "EXTR-TEST"})) as call:
+            paypal_tools.record_invoice_payment({}, "INV-TEST", 128.0)
+
+        self.assertEqual(paypal_tools.API_BASE, "https://api-m.sandbox.paypal.com")
+        self.assertEqual(call.call_args.args, ("POST", "/v2/invoicing/invoices/INV-TEST/payments"))
+        self.assertEqual(call.call_args.kwargs, {
+            "token": "test-token",
+            "body": {
+                "method": "OTHER",
+                "amount": {"currency_code": "USD", "value": "128.00"},
+                "note": "Recorded in sandbox demo by the manager",
+            },
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

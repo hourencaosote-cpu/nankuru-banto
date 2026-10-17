@@ -205,6 +205,103 @@ class AppSafetyTests(unittest.TestCase):
         send_invoice.assert_called_once_with({"BUYER_EMAIL": "buyer@example.test"}, "INV-TEST")
         self.assertEqual(self._read_approvals()[0]["status"], "sent")
 
+    def test_sandbox_payment_controls_only_appear_on_sent_cards(self):
+        pending = self._pending_extension("P001")
+        sent = self._pending_extension("P002")
+        sent.update(status="sent", invoice_id="INV-SENT", pay_url="https://www.sandbox.paypal.com/invoice/test")
+        confirmed = self._pending_extension("P003")
+        confirmed.update(status="confirmed", invoice_id="INV-PAID")
+        self._write_approvals([pending, sent, confirmed])
+
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertEqual(page.count("Record sandbox payment"), 1)
+        self.assertEqual(page.count("View guest invoice in PayPal"), 1)
+        self.assertIn('target="_blank"', page)
+        self.assertIn("Sandbox only — in production the guest pays in PayPal.", page)
+
+        sent.pop("pay_url")
+        self._write_approvals([pending, sent, confirmed])
+        self.assertNotIn("View guest invoice in PayPal", self.client.get("/").get_data(as_text=True))
+
+    def test_record_sandbox_payment_confirms_once_with_saved_amount(self):
+        item = self._pending_extension()
+        item.update(status="sent", invoice_id="INV-TEST", pay_url="https://www.sandbox.paypal.com/invoice/test")
+        self._write_approvals([item])
+        payment = mock.Mock()
+        env = {"PAYPAL_CLIENT_ID": "test-client"}
+
+        with mock.patch.object(web_app, "load_env", return_value=env), \
+             mock.patch.object(web_app, "record_invoice_payment", payment), \
+             mock.patch.object(check_payments, "_get_token", return_value="test-token"), \
+             mock.patch.object(check_payments, "get_invoice_status", return_value="MARKED_AS_PAID"):
+            token = self._csrf_token()
+            first = self.client.post(
+                "/proposals/P001/record-sandbox-payment",
+                data={"csrf_token": token, "amount": "9999", "invoice_id": "INV-FORGED"},
+            )
+            second = self.client.post(
+                "/proposals/P001/record-sandbox-payment", data={"csrf_token": token},
+            )
+
+        self.assertEqual((first.status_code, second.status_code), (302, 302))
+        payment.assert_called_once_with(env, "INV-TEST", 128.0)
+        saved = self._read_approvals()[0]
+        self.assertEqual(saved["status"], "confirmed")
+        self.assertTrue(saved["payment_recorded_by_manager"])
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Paid (recorded by manager · sandbox)", page)
+        self.assertNotIn("Record sandbox payment", page)
+        self.assertIn("not eligible for sandbox payment recording", page)
+        entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            [entry["detail"] for entry in entries if entry["action"] == "recorded_sandbox_payment"],
+            [{"id": "P001", "invoice_id": "INV-TEST"}],
+        )
+
+    def test_record_sandbox_payment_failure_keeps_sent_and_releases_limit(self):
+        item = self._pending_extension()
+        item.update(status="sent", invoice_id="INV-TEST")
+        self._write_approvals([item])
+        with mock.patch.object(web_app, "load_env", return_value={}), \
+             mock.patch.object(web_app, "record_invoice_payment", side_effect=RuntimeError("mock failure")) as payment:
+            self.assertEqual(self._post("/proposals/P001/record-sandbox-payment").status_code, 302)
+        payment.assert_called_once()
+        self.assertEqual(self._read_approvals()[0]["status"], "sent")
+        self.assertNotIn("payment_recorded_by_manager", self._read_approvals()[0])
+        self.assertIn("PayPal could not record the sandbox payment", self.client.get("/").get_data(as_text=True))
+        limits = json.loads((self.data_dir / "workspaces" / "_limits.json").read_text(encoding="utf-8"))
+        self.assertEqual(limits["visitors"][self.workspace_id]["payment_records_total"], 0)
+
+    def test_record_sandbox_payment_limit_and_csrf_block_paypal(self):
+        item = self._pending_extension()
+        item.update(status="sent", invoice_id="INV-TEST")
+        self._write_approvals([item])
+        with mock.patch.dict("os.environ", {"MAX_PAYMENT_RECORDS_PER_DAY_PER_VISITOR": "0"}), \
+             mock.patch.object(web_app, "record_invoice_payment") as payment:
+            self.assertEqual(self.client.get("/proposals/P001/record-sandbox-payment").status_code, 405)
+            self.assertEqual(self.client.post("/proposals/P001/record-sandbox-payment").status_code, 400)
+            self.assertEqual(self._post("/proposals/P001/record-sandbox-payment").status_code, 302)
+        payment.assert_not_called()
+        self.assertEqual(self._read_approvals()[0]["status"], "sent")
+        self.assertIn("sandbox payment recording limit", self.client.get("/").get_data(as_text=True))
+
+    def test_recorded_payment_check_failure_cannot_record_twice(self):
+        item = self._pending_extension()
+        item.update(status="sent", invoice_id="INV-TEST")
+        self._write_approvals([item])
+        with mock.patch.object(web_app, "load_env", return_value={}), \
+             mock.patch.object(web_app, "record_invoice_payment") as payment, \
+             mock.patch.object(web_app, "check_payments_action", side_effect=RuntimeError("mock failure")):
+            self._post("/proposals/P001/record-sandbox-payment")
+            self._post("/proposals/P001/record-sandbox-payment")
+        payment.assert_called_once()
+        saved = self._read_approvals()[0]
+        self.assertEqual(saved["status"], "sent")
+        self.assertTrue(saved["payment_recorded_by_manager"])
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Waiting for PayPal status confirmation", page)
+        self.assertNotIn("Record sandbox payment", page)
+
     def test_rejection_never_calls_paypal(self):
         self._write_approvals([self._pending_extension()])
         with mock.patch.object(approve, "create_extension_invoice") as create_invoice, \

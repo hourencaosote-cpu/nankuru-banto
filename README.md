@@ -101,7 +101,7 @@ In `env.txt`:
 1. **Reset demo** — starts the typhoon night (Aug 6, 22:00) with 5 fictional guests
 2. **Run AI check** — watch the agent check flights, ignore the rumour, propose 3 extensions and send 1 OTA booking to staff
 3. **Approve & send PayPal invoice** on a guest
-4. Pay the invoice in the Sandbox Personal account
+4. Pay as the guest in the Sandbox Personal account, **or** click **Record sandbox payment**
 5. **Check payments** — the extension is confirmed
 
 A terminal-only version is also available: `python3 agent.py --reset`, `python3 approve.py`, `python3 check_payments.py`.

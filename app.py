@@ -20,6 +20,7 @@ from common import (
     DATA_DIR, approvals_path, load_env, log_decision, log_path, read_json,
     reset_workspace_paths, set_workspace_paths, write_json,
 )
+from paypal_tools import record_invoice_payment
 
 
 app = Flask(__name__)
@@ -44,6 +45,7 @@ LIMIT_DEFAULTS = {
     "MAX_AI_RUNS_PER_DAY": 50,
     "MAX_INVOICES_PER_DAY_PER_VISITOR": 10,
     "MAX_INVOICES_PER_DAY": 200,
+    "MAX_PAYMENT_RECORDS_PER_DAY_PER_VISITOR": 10,
 }
 ACTIVE_EXTENSION_STATUSES = {"pending", "approved", "sent", "confirmed"}
 
@@ -73,6 +75,7 @@ ACTION_LABELS = {
     "payment_confirmed": "Payment confirmed",
     "payment_pending": "Payment still pending",
     "payment_check_failed": "Payment check failed safely",
+    "recorded_sandbox_payment": "Manager recorded sandbox payment",
     "blocked_unknown_tool": "Unknown AI tool blocked",
     "stopped_max_steps": "AI stopped at its step limit",
     "ai_check_failed": "AI check failed safely",
@@ -213,8 +216,9 @@ def _load_limits(day, now):
         limits["invoice_total"] = 0
         for workspace_id, visitor in list(visitors.items()):
             visitor["invoice_total"] = 0
+            visitor["payment_records_total"] = 0
             visitor["ai_times"] = [stamp for stamp in visitor.get("ai_times", []) if stamp > now - 3600]
-            if not visitor["ai_times"]:
+            if not visitor["ai_times"] and not visitor["payment_records_total"]:
                 del visitors[workspace_id]
     limits.setdefault("ai_total", 0)
     limits.setdefault("invoice_total", 0)
@@ -243,7 +247,9 @@ def _reserve_limit(operation, workspace_id):
     day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
     with LIMITS_LOCK:
         limits = _load_limits(day, now)
-        visitor = limits["visitors"].setdefault(workspace_id, {"ai_times": [], "invoice_total": 0})
+        visitor = limits["visitors"].setdefault(
+            workspace_id, {"ai_times": [], "invoice_total": 0, "payment_records_total": 0},
+        )
         if operation == "ai":
             visitor["ai_times"] = [stamp for stamp in visitor.get("ai_times", []) if stamp > now - 3600]
             if len(visitor["ai_times"]) >= _limit_value("MAX_AI_RUNS_PER_HOUR_PER_VISITOR"):
@@ -252,13 +258,22 @@ def _reserve_limit(operation, workspace_id):
                 raise DemoLimitReached("Demo limit reached for today. Please try again tomorrow.", operation, "global_day")
             visitor["ai_times"].append(now)
             limits["ai_total"] += 1
-        else:
+        elif operation == "payment_record":
+            if visitor.get("payment_records_total", 0) >= _limit_value("MAX_PAYMENT_RECORDS_PER_DAY_PER_VISITOR"):
+                raise DemoLimitReached(
+                    "You have reached today's sandbox payment recording limit. Please try again tomorrow.",
+                    operation, "visitor_day",
+                )
+            visitor["payment_records_total"] = visitor.get("payment_records_total", 0) + 1
+        elif operation == "invoice":
             if visitor.get("invoice_total", 0) >= _limit_value("MAX_INVOICES_PER_DAY_PER_VISITOR"):
                 raise DemoLimitReached("You have reached today's invoice demo limit. Please try again tomorrow.", operation, "visitor_day")
             if limits["invoice_total"] >= _limit_value("MAX_INVOICES_PER_DAY"):
                 raise DemoLimitReached("Demo invoice limit reached for today. Please try again tomorrow.", operation, "global_day")
             visitor["invoice_total"] = visitor.get("invoice_total", 0) + 1
             limits["invoice_total"] += 1
+        else:
+            raise ValueError("Unknown demo limit operation.")
         _save_limits(limits)
     return day
 
@@ -271,6 +286,16 @@ def _release_invoice_limit(workspace_id, day):
         visitor = limits.get("visitors", {}).get(workspace_id, {})
         visitor["invoice_total"] = max(0, visitor.get("invoice_total", 0) - 1)
         limits["invoice_total"] = max(0, limits.get("invoice_total", 0) - 1)
+        _save_limits(limits)
+
+
+def _release_payment_record_limit(workspace_id, day):
+    with LIMITS_LOCK:
+        limits = read_json(_limits_path(), {})
+        if limits.get("day") != day:
+            return
+        visitor = limits.get("visitors", {}).get(workspace_id, {})
+        visitor["payment_records_total"] = max(0, visitor.get("payment_records_total", 0) - 1)
         _save_limits(limits)
 
 
@@ -732,6 +757,51 @@ def check_payments():
             flash(f"Payment check complete: {pending} still pending, {failed} could not be checked.", "info")
         else:
             flash("There are no sent invoices waiting for payment.", "info")
+    return redirect(url_for("dashboard") + "#review-queue")
+
+
+@app.post("/proposals/<item_id>/record-sandbox-payment")
+@workspace_action("record_sandbox_payment")
+def record_sandbox_payment(item_id):
+    queue = read_json(approvals_path(), [])
+    item = next((entry for entry in queue if entry.get("id") == item_id), None)
+    if (item is None or item.get("type") != "extension" or item.get("status") != "sent"
+            or not item.get("invoice_id") or item.get("payment_recorded_by_manager")):
+        flash("This invoice is not eligible for sandbox payment recording.", "error")
+        return redirect(url_for("dashboard") + "#review-queue")
+
+    try:
+        day = _reserve_limit("payment_record", g.workspace_id)
+    except DemoLimitReached as error:
+        log_decision("system", "rate_limit_blocked", {"operation": error.operation, "scope": error.scope})
+        flash(str(error), "error")
+        return redirect(url_for("dashboard") + "#review-queue")
+
+    try:
+        env = load_env()
+        record_invoice_payment(env, item["invoice_id"], item["amount_usd"])
+    except (RuntimeError, SystemExit, ValueError, OSError) as error:
+        _release_payment_record_limit(g.workspace_id, day)
+        _record_web_failure("record_sandbox_payment", error)
+        flash("PayPal could not record the sandbox payment. The invoice is still marked as sent.", "error")
+        return redirect(url_for("dashboard") + "#review-queue")
+
+    item["payment_recorded_by_manager"] = True
+    write_json(approvals_path(), queue)
+    log_decision("human", "recorded_sandbox_payment", {"id": item_id, "invoice_id": item["invoice_id"]})
+    try:
+        check_payments_action(env=env)
+    except (RuntimeError, SystemExit) as error:
+        _record_web_failure("confirm_recorded_sandbox_payment", error)
+        flash("Sandbox payment was recorded. PayPal status could not be checked; use Check payments to confirm it.", "error")
+    else:
+        current = next(
+            (entry for entry in read_json(approvals_path(), []) if entry.get("id") == item_id), None,
+        )
+        if current and current.get("status") == "confirmed":
+            flash("Sandbox payment recorded by the manager. The extension is confirmed.", "success")
+        else:
+            flash("Sandbox payment was recorded. Use Check payments to confirm the invoice status.", "info")
     return redirect(url_for("dashboard") + "#review-queue")
 
 

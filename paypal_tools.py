@@ -1,7 +1,7 @@
 """
 「手」の部分：PayPal sandbox で延泊の請求書を作る。
 
-この関数を呼べるのは approve.py（人が承認したとき）だけ。
+請求・支払い記録は人が Web 画面で実行したときだけ呼ぶ。
 AI（agent.py）からは呼べないようにしてある。
 """
 
@@ -12,6 +12,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from decimal import Decimal, InvalidOperation
 
 # 安全のため、接続先は sandbox に固定する（Live には絶対につながない）
 API_BASE = "https://api-m.sandbox.paypal.com"
@@ -102,3 +103,28 @@ def get_invoice_status(env, invoice_id, token=None):
     if status != 200:
         raise RuntimeError(f"請求書の確認に失敗しました: {json.dumps(res, ensure_ascii=False)}")
     return res.get("status", "")
+
+
+def record_invoice_payment(env, invoice_id, amount):
+    """Record a manager-entered external payment on a sandbox invoice."""
+    if not invoice_id:
+        raise ValueError("A sent invoice ID is required.")
+    try:
+        total = Decimal(str(amount))
+    except (InvalidOperation, ValueError):
+        raise ValueError("The saved invoice amount is invalid.") from None
+    if not total.is_finite() or total <= 0:
+        raise ValueError("The saved invoice amount is invalid.")
+
+    token = _get_token(env)
+    path = f"/v2/invoicing/invoices/{urllib.parse.quote(str(invoice_id), safe='')}/payments"
+    status, _response = _call(
+        "POST", path, token=token,
+        body={
+            "method": "OTHER",
+            "amount": {"currency_code": "USD", "value": f"{total:.2f}"},
+            "note": "Recorded in sandbox demo by the manager",
+        },
+    )
+    if status not in (200, 201, 204):
+        raise RuntimeError("PayPal could not record the sandbox payment.")

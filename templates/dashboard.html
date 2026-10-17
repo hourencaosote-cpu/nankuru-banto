@@ -143,16 +143,16 @@
                 <div class="card-kicker"><span>{{ proposal.id }}</span><span>{{ proposal.language }}</span></div>
                 <h3>{{ proposal.guest_name }}</h3>
               </div>
-              <span class="status-badge status-{{ proposal.status }}">{{ status_labels.get(proposal.status, proposal.status|title) }}</span>
+              <span class="status-badge status-{{ proposal.status }}{% if proposal.status == 'confirmed' and proposal.payment_recorded_by_manager %} status-recorded{% endif %}">{{ 'Paid (recorded by manager · sandbox)' if proposal.status == 'confirmed' and proposal.payment_recorded_by_manager else status_labels.get(proposal.status, proposal.status|title) }}</span>
             </header>
 
             {% if proposal.status == 'confirmed' %}
               <div class="confirmation-banner">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 10.5 3 3 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                Payment received. Extend the room assignment for {{ proposal.nights }} night{% if proposal.nights != 1 %}s{% endif %}.
+                {{ 'Sandbox payment recorded by manager.' if proposal.payment_recorded_by_manager else 'Payment received.' }} Extend the room assignment for {{ proposal.nights }} night{% if proposal.nights != 1 %}s{% endif %}.
               </div>
             {% elif proposal.status == 'sent' %}
-              <div class="sent-banner">PayPal sandbox invoice sent · Waiting for payment</div>
+              <div class="sent-banner">{{ 'Sandbox payment recorded by manager · Waiting for PayPal status confirmation' if proposal.payment_recorded_by_manager else 'PayPal sandbox invoice sent · Waiting for payment' }}</div>
             {% elif proposal.status == 'approved' %}
               <div class="sent-banner">Invoice draft saved · Not yet sent</div>
             {% endif %}
@@ -204,8 +204,21 @@
                   <button class="button button-primary" type="submit">Send saved invoice</button>
                 </form>
               </div>
-            {% elif proposal.status == 'sent' and proposal.pay_url %}
-              <a class="text-link" href="{{ proposal.pay_url }}" target="_blank" rel="noreferrer">View sandbox invoice</a>
+            {% elif proposal.status == 'sent' %}
+              {% if not proposal.payment_recorded_by_manager %}
+                <div class="card-actions">
+                  <div class="sandbox-payment-action">
+                    <form method="post" action="{{ url_for('record_sandbox_payment', item_id=proposal.id) }}" class="js-loading-form" data-loading-message="Recording the sandbox payment…">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button class="button button-secondary" type="submit">Record sandbox payment</button>
+                    </form>
+                    <small class="sandbox-note">Sandbox only — in production the guest pays in PayPal.</small>
+                  </div>
+                </div>
+              {% endif %}
+              {% if proposal.pay_url %}
+                <a class="text-link" href="{{ proposal.pay_url }}" target="_blank" rel="noopener noreferrer">View guest invoice in PayPal</a>
+              {% endif %}
             {% endif %}
           </article>
         {% endfor %}
