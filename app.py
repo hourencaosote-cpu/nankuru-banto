@@ -408,6 +408,82 @@ def _guest_response(guest, items, flight_status):
     return "No action needed", "neutral"
 
 
+def _tracker_data(guest_rows, approvals):
+    tracker_statuses = {
+        "pending": ("Pending approval", "pending"),
+        "approved": ("Pending approval", "approved"),
+        "sent": ("Invoice sent", "sent"),
+        "confirmed": ("Paid · confirmed", "confirmed"),
+        "rejected": ("Rejected", "rejected"),
+        "staff": ("Staff follow-up", "approved"),
+        "warning": ("Awaiting AI review", "pending"),
+        "neutral": ("No action needed", "approved"),
+    }
+    rows = []
+    for guest in guest_rows:
+        guest_items = [item for item in approvals if item.get("guest_id") == guest.get("id")]
+        extension = next((item for item in reversed(guest_items) if item.get("type") == "extension"), None)
+        status, status_style = tracker_statuses.get(
+            guest["response_style"], (guest["response"], guest["response_style"]),
+        )
+
+        flight_number = guest.get("departure_flight", "")
+        flight_status = guest.get("flight_status", "unknown")
+        invoice_id = str(extension.get("invoice_id") or "") if extension else ""
+        rows.append({
+            "guest": guest.get("name", ""),
+            "room": guest.get("room", ""),
+            "booking": "OTA" if guest.get("booking_channel") == "ota" else "Direct",
+            "flight": f"{flight_number} · {flight_status.replace('_', ' ').capitalize()}",
+            "proposalNights": extension.get("nights") if extension else None,
+            "amountUsd": float(extension.get("amount_usd") or 0) if extension else 0.0,
+            "status": status,
+            "statusStyle": status_style,
+            "invoice": invoice_id[-6:] if invoice_id else "—",
+        })
+    return {
+        "rows": rows,
+        "totals": {
+            "guest": "Proposal total",
+            "proposalNights": sum(row["proposalNights"] or 0 for row in rows),
+            "amountUsd": round(sum(row["amountUsd"] for row in rows), 2),
+        },
+    }
+
+
+def _departure_labels(guests, as_of):
+    try:
+        checkout_date = datetime.fromisoformat(guests[0]["checkout_date"]).date()
+        notice_date = datetime.fromisoformat(as_of).date()
+    except (IndexError, KeyError, TypeError, ValueError):
+        return "guests scheduled to depart", "UPCOMING DEPARTURES"
+
+    date_label = f"{checkout_date.strftime('%b')} {checkout_date.day}"
+    days_until = (checkout_date - notice_date).days
+    relative_day = {0: "TODAY", 1: "TOMORROW"}.get(days_until, "UPCOMING")
+    return f"guests departing {date_label}", f"{relative_day} · {date_label.upper()}"
+
+
+def _activity_views(entries, flights, guest_count, guest_names):
+    views = []
+    latest_model = None
+    for entry in entries:
+        action = entry.get("action")
+        if action == "gemini_model_used":
+            detail = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
+            latest_model = detail.get("model")
+            continue
+        view = _log_view(entry, flights, guest_count, guest_names)
+        if action == "finished":
+            if latest_model:
+                view["model"] = latest_model
+            latest_model = None
+        elif action in {"ai_check_failed", "replay_mode", "reset_demo"}:
+            latest_model = None
+        views.append(view)
+    return list(reversed(views[-18:]))
+
+
 def _log_view(entry, flights, guest_count, guest_names):
     detail = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
     if entry.get("action") == "tool_call":
@@ -486,6 +562,8 @@ def build_dashboard():
             }
         )
 
+    checkout_caption, departure_eyebrow = _departure_labels(guests, flight_data.get("as_of"))
+
     room_capacity = int(guest_data.get("vacant_rooms_for_extension", 0))
     allocated_rooms = sum(
         1
@@ -536,6 +614,8 @@ def build_dashboard():
     return {
         "hotel": guest_data.get("hotel", "Nankuru Demo Inn"),
         "as_of": flight_data.get("as_of", "Unknown"),
+        "checkout_caption": checkout_caption,
+        "departure_eyebrow": departure_eyebrow,
         "log_base_time": base_time,
         "typhoon_status": "Typhoon response active" if cancelled_count else "No official cancellations",
         "metrics": {
@@ -552,8 +632,9 @@ def build_dashboard():
         "gate_events": gate_events,
         "gate_rules": GATE_RULES,
         "social_posts": flight_data.get("unverified_social_posts", []),
-        "activity": [_log_view(entry, flights, len(guests), guest_names) for entry in reversed(log_entries[-18:])],
+        "activity": _activity_views(log_entries, flights, len(guests), guest_names),
         "status_labels": STATUS_LABELS,
+        "tracker_data": _tracker_data(guest_rows, approvals),
         "replay_active": last_ai_source == "replay_mode",
     }
 

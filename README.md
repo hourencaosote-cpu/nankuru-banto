@@ -74,6 +74,8 @@ Paying the invoice **is** the guest's confirmation: no forms, no front-desk queu
 | **Claude** (Anthropic) | Development | Product design, UI mock-ups, logo, safety-rule design, code review and testing |
 | **Codex** (OpenAI) | Development | Implemented the Flask dashboard and tests from written specs ([`AGENTS.md`](AGENTS.md)) |
 
+The manager dashboard uses AG Grid Community for its sortable guest and invoice tracker.
+
 ## Run it locally
 
 Requirements: Python 3.9+, a free [PayPal Developer](https://developer.paypal.com/) account, a free [Google AI Studio](https://aistudio.google.com/apikey) key.
@@ -129,6 +131,7 @@ approve.py          Approval actions (shared by CLI and web)
 check_payments.py   Payment confirmation
 app.py              Flask manager dashboard
 templates/ static/  Dashboard UI
+static/tracker.js   Guest and invoice tracker grid
 data/               Fictional guests, flights and inn policy
 tests/              Offline tests
 ```

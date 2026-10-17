@@ -114,7 +114,8 @@ class WorkspaceTests(unittest.TestCase):
     def test_new_workspace_starts_with_five_guests_waiting_for_ai(self):
         client, workspace_id, _ = self._client()
         page = client.get("/").get_data(as_text=True)
-        self.assertEqual(page.count("Awaiting AI review"), 5)
+        rendered_dashboard = page.split('<script type="application/json" id="tracker-data">', 1)[0]
+        self.assertEqual(rendered_dashboard.count("Awaiting AI review"), 5)
         self.assertEqual(self._queue(workspace_id), [])
 
     def test_reset_only_clears_its_own_workspace(self):

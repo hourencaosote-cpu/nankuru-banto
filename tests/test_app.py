@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -84,6 +85,12 @@ class AppSafetyTests(unittest.TestCase):
     def _post(self, path):
         return self.client.post(path, data={"csrf_token": self._csrf_token()})
 
+    def _tracker(self):
+        page = self.client.get("/").get_data(as_text=True)
+        match = re.search(r'<script type="application/json" id="tracker-data">(.*?)</script>', page, re.S)
+        self.assertIsNotNone(match)
+        return page, json.loads(match.group(1))
+
     @staticmethod
     def _pending_extension(item_id="P001", guest_id="G001", guest_name="Emily Carter"):
         return {
@@ -107,6 +114,116 @@ class AppSafetyTests(unittest.TestCase):
     def test_post_requires_csrf_and_approval_get_is_not_allowed(self):
         self.assertEqual(self.client.post("/run-ai").status_code, 400)
         self.assertEqual(self.client.get("/proposals/P001/approve").status_code, 405)
+
+    def test_tracker_embeds_five_guests_and_community_grid_assets(self):
+        page, tracker = self._tracker()
+
+        self.assertEqual(len(tracker["rows"]), 5)
+        self.assertEqual(tracker["totals"]["proposalNights"], 0)
+        self.assertEqual(tracker["totals"]["amountUsd"], 0)
+        self.assertTrue(all(row["status"] == "Awaiting AI review" for row in tracker["rows"]))
+        self.assertIn("Guest &amp; invoice tracker", page)
+        self.assertIn("ag-grid-community@32.3.3/dist/ag-grid-community.min.js", page)
+        self.assertIn("/static/tracker.js", page)
+        self.assertIn("Guest departures", page)
+
+    def test_tracker_status_and_amount_follow_mocked_approval_and_payment(self):
+        self._write_approvals([self._pending_extension()])
+        _, tracker = self._tracker()
+        row = next(row for row in tracker["rows"] if row["guest"] == "Emily Carter")
+        self.assertEqual((row["status"], row["amountUsd"], row["proposalNights"]),
+                         ("Pending approval", 128.0, 2))
+
+        with mock.patch.object(approve, "load_env", return_value={"BUYER_EMAIL": "buyer@example.test"}), \
+             mock.patch.object(approve, "create_extension_invoice", return_value=("INV-123456", "128.00")), \
+             mock.patch.object(approve, "send_invoice", return_value=("SENT", None)):
+            self.assertEqual(self._post("/proposals/P001/approve").status_code, 302)
+
+        _, tracker = self._tracker()
+        row = next(row for row in tracker["rows"] if row["guest"] == "Emily Carter")
+        self.assertEqual((row["status"], row["amountUsd"], row["invoice"]),
+                         ("Invoice sent", 128.0, "123456"))
+
+        with mock.patch.object(check_payments, "load_env", return_value={"PAYPAL_CLIENT_ID": "test"}), \
+             mock.patch.object(check_payments, "_get_token", return_value="test-token"), \
+             mock.patch.object(check_payments, "get_invoice_status", return_value="PAID"):
+            self.assertEqual(self._post("/check-payments").status_code, 302)
+
+        _, tracker = self._tracker()
+        row = next(row for row in tracker["rows"] if row["guest"] == "Emily Carter")
+        self.assertEqual((row["status"], row["amountUsd"]), ("Paid · confirmed", 128.0))
+        self.assertEqual(tracker["totals"]["proposalNights"], 2)
+        self.assertEqual(tracker["totals"]["amountUsd"], 128.0)
+
+    def test_tracker_json_escapes_script_end_in_guest_name(self):
+        guest_data = json.loads((self.data_dir / "guests.json").read_text(encoding="utf-8"))
+        guest_data["guests"][0]["name"] = "</script><script>alert(1)</script>"
+        (self.data_dir / "guests.json").write_text(json.dumps(guest_data), encoding="utf-8")
+
+        page, tracker = self._tracker()
+
+        self.assertEqual(tracker["rows"][0]["guest"], "</script><script>alert(1)</script>")
+        self.assertNotIn("</script><script>alert(1)</script>", page)
+        self.assertIn("\\u003c/script\\u003e", page)
+
+    def test_tracker_uses_guest_list_response_after_ai_check(self):
+        def fake_gemini(_env, _contents):
+            return {"candidates": [{"content": {"role": "model", "parts": [{"text": "Review complete."}]}}]}
+
+        with mock.patch.object(web_app, "load_env", return_value={}), \
+             mock.patch.object(agent, "call_gemini", new=fake_gemini), \
+             mock.patch("builtins.print"):
+            self.assertEqual(self._post("/run-ai").status_code, 302)
+
+        _, tracker = self._tracker()
+        sophie = next(row for row in tracker["rows"] if row["guest"] == "Sophie Martin")
+        self.assertEqual(sophie["status"], "No action needed")
+        self.assertEqual(web_app.build_dashboard()["guests"][-1]["response"], sophie["status"])
+
+    def test_departure_labels_follow_checkout_date_and_notice_time(self):
+        guest_file = self.data_dir / "guests.json"
+        flight_file = self.data_dir / "flights.json"
+        guest_data = json.loads(guest_file.read_text(encoding="utf-8"))
+        flight_data = json.loads(flight_file.read_text(encoding="utf-8"))
+        for guest in guest_data["guests"]:
+            guest["checkout_date"] = "2026-08-09"
+        flight_data["as_of"] = "2026-08-08 22:00"
+        guest_file.write_text(json.dumps(guest_data), encoding="utf-8")
+        flight_file.write_text(json.dumps(flight_data), encoding="utf-8")
+
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("guests departing Aug 9", page)
+        self.assertIn("TOMORROW · AUG 9", page)
+        self.assertNotIn("guests departing Aug 7", page)
+
+        flight_data["as_of"] = "2026-08-09 08:00"
+        flight_file.write_text(json.dumps(flight_data), encoding="utf-8")
+        self.assertIn("TODAY · AUG 9", self.client.get("/").get_data(as_text=True))
+
+    def test_model_log_stays_audited_but_only_appears_beside_completed_review(self):
+        entries = [
+            {"time": "2026-10-15T10:00:00", "actor": "human", "action": "deferred",
+             "detail": {"id": f"item-{index}"}}
+            for index in range(18)
+        ]
+        entries.extend([
+            {"time": "2026-10-15T10:01:00", "actor": "ai", "action": "gemini_model_used",
+             "detail": {"model": "gemini-3.8-flash"}},
+            {"time": "2026-10-15T10:02:00", "actor": "ai", "action": "finished",
+             "detail": {"summary": "Review complete."}},
+        ])
+        self._write_log_entries(entries)
+
+        page = self.client.get("/").get_data(as_text=True)
+        activity = web_app.build_dashboard()["activity"]
+        self.assertEqual(len(activity), 18)
+        self.assertEqual(activity[0]["label"], "AI review completed")
+        self.assertEqual(activity[0]["model"], "gemini-3.8-flash")
+        self.assertEqual(activity[-1]["subject"], "item-1")
+        self.assertNotIn("Gemini model responded", page)
+        self.assertIn("gemini-3.8-flash", page)
+        self.assertEqual(json.loads(self.log_path.read_text(encoding="utf-8").splitlines()[-2])["action"],
+                         "gemini_model_used")
 
     def test_two_ai_checks_do_not_duplicate_staff_note_and_log_investigation(self):
         def fake_gemini(_env, contents):
