@@ -515,12 +515,15 @@ def _log_view(entry, flights, guest_count, guest_names):
         subject = guest_names.get(guest_id) or guest_id or "System"
     else:
         subject = guest_names.get(guest_id) or detail.get("guest_name") or detail.get("id") or guest_id or "System"
-    return {
+    view = {
         "time": entry.get("time", ""),
         "actor": str(entry.get("actor", "system")).upper(),
         "label": ACTION_LABELS.get(entry.get("action"), str(entry.get("action", "Activity")).replace("_", " ").title()),
         "subject": subject,
     }
+    if entry.get("action") == "ai_check_failed":
+        view["diagnostic"] = detail.get("code") if detail.get("code") is not None else detail.get("error_type")
+    return view
 
 
 def build_dashboard():
@@ -726,7 +729,9 @@ def run_ai_check():
         log_decision("system", "rate_limit_blocked", {"operation": error.operation, "scope": error.scope})
         flash(str(error), "error")
     except agent.GeminiUnavailable as error:
-        log_decision("system", "ai_check_failed", {"code": error.code})
+        log_decision("system", "ai_check_failed", {
+            "code": error.code, "error_type": error.cause_type or "GeminiUnavailable",
+        })
         if error.code == 429:
             message = "Gemini usage limit reached (429). No approval was performed."
         elif error.code == 503:
@@ -738,6 +743,11 @@ def run_ai_check():
         flash(message, "error")
     except (SystemExit, Exception) as error:
         log_decision("system", "ai_check_failed", {"error_type": type(error).__name__})
+        sanitized = RuntimeError("Exception details withheld")
+        app.logger.exception(
+            "AI check failed unexpectedly (%s)", type(error).__name__,
+            exc_info=(RuntimeError, sanitized, error.__traceback__),
+        )
         flash("The AI check could not finish. No approval was performed. Please try again shortly.", "error")
     else:
         flash("AI check completed. Review the proposals before approving anything.", "success")
@@ -902,6 +912,14 @@ def not_found(_error):
         title="Page not found",
         message="The requested page does not exist.",
     ), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    if request.method == "GET":
+        flash("The server just woke up. Please press the button again.", "info")
+        return redirect(url_for("dashboard"))
+    return error
 
 
 if __name__ == "__main__":

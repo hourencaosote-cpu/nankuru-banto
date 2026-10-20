@@ -299,7 +299,7 @@
             {% for event in activity %}
               <div class="timeline-item">
                 <span class="timeline-dot actor-{{ event.actor|lower }}" aria-hidden="true"></span>
-                <div><strong>{{ event.label }}</strong><p>{{ event.actor }} · {{ event.subject }}</p>{% if event.model %}<small class="activity-model">{{ event.model }}</small>{% endif %}<time>{{ event.time|short_time(as_of, log_base_time) }}</time></div>
+                <div><strong>{{ event.label }}{% if event.diagnostic %}<small class="activity-diagnostic"> · {{ event.diagnostic }}</small>{% endif %}</strong><p>{{ event.actor }} · {{ event.subject }}</p>{% if event.model %}<small class="activity-model">{{ event.model }}</small>{% endif %}<time>{{ event.time|short_time(as_of, log_base_time) }}</time></div>
               </div>
             {% else %}
               <p class="muted-copy">No decision activity has been logged yet.</p>

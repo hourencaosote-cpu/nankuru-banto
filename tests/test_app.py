@@ -111,9 +111,51 @@ class AppSafetyTests(unittest.TestCase):
             "created_at": "2026-10-15T10:00:00",
         }
 
-    def test_post_requires_csrf_and_approval_get_is_not_allowed(self):
+    def test_post_requires_csrf_and_approval_get_only_redirects(self):
         self.assertEqual(self.client.post("/run-ai").status_code, 400)
-        self.assertEqual(self.client.get("/proposals/P001/approve").status_code, 405)
+        self.assertEqual(self.client.get("/proposals/P001/approve").status_code, 302)
+
+    def test_get_to_every_post_action_only_shows_wakeup_message(self):
+        paths = (
+            "/run-ai", "/reset-demo", "/check-payments",
+            "/proposals/P001/approve", "/proposals/P001/reject", "/items/P001/later",
+            "/staff-notes/P001/handle", "/proposals/P001/record-sandbox-payment",
+        )
+        with mock.patch.object(agent, "run_ai") as run_ai, \
+             mock.patch.object(approve, "create_extension_invoice") as invoice, \
+             mock.patch.object(web_app, "check_payments_action") as payments, \
+             mock.patch.object(web_app, "record_invoice_payment") as record_payment, \
+             mock.patch.object(web_app, "archive_demo_state") as reset:
+            for path in paths:
+                with self.subTest(path=path):
+                    response = self.client.get(path)
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(response.headers["Location"], "/")
+                    page = self.client.get("/").get_data(as_text=True)
+                    self.assertIn("The server just woke up. Please press the button again.", page)
+        run_ai.assert_not_called()
+        invoice.assert_not_called()
+        payments.assert_not_called()
+        record_payment.assert_not_called()
+        reset.assert_not_called()
+        self.assertEqual(self._read_approvals(), [])
+        self.assertEqual(self.log_path.read_text(encoding="utf-8"), "")
+        self.assertEqual(self.client.put("/run-ai").status_code, 405)
+
+    def test_unexpected_ai_failure_logs_sanitized_traceback_and_safe_diagnostic(self):
+        secret = "test-private-key-value"
+        with mock.patch.object(web_app, "load_env", return_value={"GEMINI_API_KEY": secret}), \
+             mock.patch.object(agent, "run_ai", side_effect=RuntimeError(secret)), \
+             self.assertLogs(web_app.app.logger, level="ERROR") as captured:
+            self.assertEqual(self._post("/run-ai").status_code, 302)
+
+        self.assertNotIn(secret, "\n".join(captured.output))
+        self.assertIn("Traceback (most recent call last)", "\n".join(captured.output))
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("AI check failed safely<small class=\"activity-diagnostic\"> · RuntimeError", page)
+        self.assertNotIn(secret, page)
+        entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(entries[-1]["detail"], {"error_type": "RuntimeError"})
 
     def test_tracker_embeds_five_guests_and_community_grid_assets(self):
         page, tracker = self._tracker()
@@ -274,6 +316,24 @@ class AppSafetyTests(unittest.TestCase):
         self.assertIn("Demo replay — recorded Gemini responses. Safety gate, approvals and PayPal run live.", page)
         self.assertIn("Demo replay used recorded Gemini responses", page)
 
+    def test_timeout_in_web_ai_check_switches_to_replay(self):
+        replay_file = self.data_dir / "replay" / "gemini_run.json"
+        replay_file.parent.mkdir()
+        replay_file.write_text(json.dumps([
+            {"candidates": [{"content": {"role": "model", "parts": [{"text": "Demo complete."}]}}]},
+        ]), encoding="utf-8")
+        with mock.patch.object(agent, "REPLAY_PATH", str(replay_file)), \
+             mock.patch.object(web_app, "load_env", return_value={}), \
+             mock.patch.object(agent, "call_gemini", side_effect=TimeoutError("private failure detail")), \
+             mock.patch("builtins.print"):
+            self.assertEqual(self._post("/run-ai").status_code, 302)
+
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Demo replay — recorded Gemini responses", page)
+        self.assertIn("AI check completed. Review the proposals", page)
+        self.assertNotIn("The AI check could not finish", page)
+        self.assertNotIn("private failure detail", self.log_path.read_text(encoding="utf-8"))
+
     def test_quota_failure_uses_specific_english_message(self):
         with mock.patch.object(web_app, "load_env", return_value={"AI_MODE": "live"}), \
              mock.patch.object(agent, "call_gemini", side_effect=agent.GeminiUnavailable(429, "quota")), \
@@ -395,7 +455,7 @@ class AppSafetyTests(unittest.TestCase):
         self._write_approvals([item])
         with mock.patch.dict("os.environ", {"MAX_PAYMENT_RECORDS_PER_DAY_PER_VISITOR": "0"}), \
              mock.patch.object(web_app, "record_invoice_payment") as payment:
-            self.assertEqual(self.client.get("/proposals/P001/record-sandbox-payment").status_code, 405)
+            self.assertEqual(self.client.get("/proposals/P001/record-sandbox-payment").status_code, 302)
             self.assertEqual(self.client.post("/proposals/P001/record-sandbox-payment").status_code, 400)
             self.assertEqual(self._post("/proposals/P001/record-sandbox-payment").status_code, 302)
         payment.assert_not_called()

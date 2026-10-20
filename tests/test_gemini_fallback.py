@@ -1,4 +1,5 @@
 import io
+import http.client
 import json
 import shutil
 import tempfile
@@ -64,7 +65,7 @@ class GeminiFallbackTests(unittest.TestCase):
         return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
 
     def _recording(self):
-        self.replay.parent.mkdir()
+        self.replay.parent.mkdir(exist_ok=True)
         self.replay.write_text(json.dumps([
             answer(
                 call("get_social_posts"),
@@ -130,6 +131,24 @@ class GeminiFallbackTests(unittest.TestCase):
         self.assertIn("replay_mode", actions)
         self.assertIn("replay_mode", web_app.ACTION_LABELS)
 
+    def test_auto_replays_after_timeout_or_malformed_response_before_writes(self):
+        for error in (TimeoutError("private timeout detail"), KeyError("private response detail")):
+            with self.subTest(error_type=type(error).__name__):
+                self._recording()
+                with mock.patch.object(agent, "call_gemini", side_effect=error):
+                    self.assertEqual(agent.run_ai({}, mode="auto", web=True), "replay")
+                items = json.loads(self.approvals.read_text(encoding="utf-8"))
+                self.assertEqual(sum(item["type"] == "extension" for item in items), 3)
+                self.assertEqual(sum(item["type"] == "staff_note" for item in items), 1)
+                entries = self._entries()
+                self.assertIn("rejected_proposal", [entry["action"] for entry in entries])
+                replay_reason = next(entry["detail"]["reason"] for entry in entries
+                                     if entry["action"] == "replay_mode")
+                self.assertEqual(replay_reason, f"Gemini unavailable ({type(error).__name__})")
+                self.assertNotIn(str(error), self.log.read_text(encoding="utf-8"))
+                self.approvals.unlink()
+                self.log.unlink()
+
     def test_auto_never_replays_after_proposal_is_written(self):
         self._recording()
         responses = [answer(call("propose_stay_extension", guest_id="G001", nights=2,
@@ -144,6 +163,82 @@ class GeminiFallbackTests(unittest.TestCase):
             agent.run_ai({}, call_model=model, mode="auto", web=True)
         self.assertEqual(len(json.loads(self.approvals.read_text(encoding="utf-8"))), 1)
         self.assertNotIn("replay_mode", [entry["action"] for entry in self._entries()])
+
+    def test_auto_never_replays_after_partial_proposal_or_staff_note(self):
+        for name, args in (
+            ("propose_stay_extension", {"guest_id": "G001", "nights": 2,
+                                         "reason": "Official cancellation.", "message_draft": "A safe extension is available."}),
+            ("notify_staff", {"guest_id": "G004", "note": "OTA booking needs staff follow-up."}),
+        ):
+            with self.subTest(first_write=name):
+                self._recording()
+                calls = [answer(call(name, **args))]
+
+                def model(_env, _contents):
+                    if calls:
+                        return calls.pop(0)
+                    raise TimeoutError("live model timed out")
+
+                with self.assertRaises(TimeoutError):
+                    agent.run_ai({}, call_model=model, mode="auto", web=True)
+                self.assertEqual(len(json.loads(self.approvals.read_text(encoding="utf-8"))), 1)
+                self.assertNotIn("replay_mode", [entry["action"] for entry in self._entries()])
+                self.approvals.unlink()
+                self.log.unlink()
+
+    def test_record_mode_timeout_never_replays(self):
+        self._recording()
+        with self.assertRaises(TimeoutError):
+            agent.run_ai({}, call_model=mock.Mock(side_effect=TimeoutError("timed out")), record=True)
+        entries = self._entries() if self.log.exists() else []
+        self.assertNotIn("replay_mode", [entry["action"] for entry in entries])
+
+    def test_call_gemini_converts_transport_and_json_failures(self):
+        failures = (
+            TimeoutError("timed out"), ConnectionError("connection lost"),
+            http.client.RemoteDisconnected("remote closed"),
+        )
+        for error in failures:
+            with self.subTest(error_type=type(error).__name__), \
+                 mock.patch("urllib.request.urlopen", side_effect=error) as urlopen:
+                with self.assertRaises(agent.GeminiUnavailable) as caught:
+                    agent.call_gemini({"GEMINI_API_KEY": "test-key"}, [])
+                self.assertIsNone(caught.exception.code)
+                self.assertEqual(caught.exception.cause_type, type(error).__name__)
+                self.assertNotIn(str(error), str(caught.exception))
+                urlopen.assert_called_once()
+
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"not JSON"
+        with mock.patch("urllib.request.urlopen", return_value=response):
+            with self.assertRaises(agent.GeminiUnavailable) as caught:
+                agent.call_gemini({"GEMINI_API_KEY": "test-key"}, [])
+        self.assertIsNone(caught.exception.code)
+        self.assertEqual(caught.exception.cause_type, "JSONDecodeError")
+
+    def test_wrapped_timeout_replay_reason_keeps_original_exception_type(self):
+        self._recording()
+        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("private timeout detail")):
+            self.assertEqual(agent.run_ai({"GEMINI_API_KEY": "test-key"}, mode="auto", web=True), "replay")
+        reason = next(entry["detail"]["reason"] for entry in self._entries()
+                      if entry["action"] == "replay_mode")
+        self.assertEqual(reason, "Gemini unavailable (TimeoutError)")
+        self.assertNotIn("private timeout detail", self.log.read_text(encoding="utf-8"))
+
+    def test_no_http_request_when_less_than_three_seconds_remain(self):
+        for remaining in (0, 2):
+            with self.subTest(remaining=remaining):
+                state = agent._new_run_state({"AI_RUN_BUDGET_SECONDS": "150"}, web=True)
+                state["deadline"] = agent.time.monotonic() + remaining
+                token = agent._run_state.set(state)
+                try:
+                    with mock.patch("urllib.request.urlopen") as urlopen:
+                        with self.assertRaises(agent.GeminiUnavailable) as caught:
+                            agent.call_gemini({"GEMINI_API_KEY": "test-key"}, [])
+                    self.assertEqual(caught.exception.code, 503)
+                    urlopen.assert_not_called()
+                finally:
+                    agent._run_state.reset(token)
 
     def test_direct_replay_runs_tools_and_missing_file_preserves_live_error(self):
         self._recording()

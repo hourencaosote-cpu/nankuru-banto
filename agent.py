@@ -10,11 +10,13 @@
 使い方:  python3 agent.py          （前回の提案を消してから始めるときは  python3 agent.py --reset）
 """
 
+import http.client
 import json
 import logging
 import math
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -34,9 +36,14 @@ _run_state = ContextVar("gemini_run_state", default=None)
 
 
 class GeminiUnavailable(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code, message, cause_type=None):
         super().__init__(message)
         self.code = code
+        self.cause_type = cause_type
+
+
+class RecordingSecretError(GeminiUnavailable):
+    """A recording may contain credentials and must never be replayed or saved."""
 
 
 def _budget_seconds(env):
@@ -314,7 +321,10 @@ def _gemini_error(e, model, body=""):
         429: "無料枠の回数制限に達しました。数分待ってからもう一度実行してください。",
         503: "Gemini が混雑しています。数分おいてから実行するか、env.txt の GEMINI_MODEL を別のモデルに変えてください。",
     }
-    raise GeminiUnavailable(e.code, f"Gemini でエラーが起きました（{e.code}）: {hints.get(e.code, '')}")
+    raise GeminiUnavailable(
+        e.code, f"Gemini でエラーが起きました（{e.code}）: {hints.get(e.code, '')}",
+        cause_type=type(e).__name__,
+    )
 
 
 def _new_run_state(env, web):
@@ -364,7 +374,10 @@ def call_gemini(env, contents):
         )
         for attempt in range(len(state["waits"]) + 1):
             try:
-                timeout = min(90, _remaining(state))
+                remaining = _remaining(state)
+                if remaining < 3:
+                    raise GeminiUnavailable(503, "Gemini の実行時間が上限に達しました。")
+                timeout = min(90, remaining)
                 state["http_calls"] += 1
                 with urllib.request.urlopen(req, timeout=timeout) as res:
                     response = json.loads(res.read().decode())
@@ -375,6 +388,10 @@ def call_gemini(env, contents):
             except urllib.error.HTTPError as e:
                 try:
                     error_body = e.read().decode("utf-8", errors="replace")
+                except (TimeoutError, socket.timeout, ConnectionError, http.client.HTTPException) as error:
+                    raise GeminiUnavailable(
+                        None, "Gemini のエラー応答を読み取れませんでした。", cause_type=type(error).__name__,
+                    ) from None
                 finally:
                     e.close()
                 if e.code == 429:
@@ -394,8 +411,15 @@ def call_gemini(env, contents):
                     time.sleep(wait)
                     continue
                 _gemini_error(e, model, error_body)
-            except urllib.error.URLError:
-                raise GeminiUnavailable(None, "Gemini に接続できませんでした。") from None
+            except urllib.error.URLError as error:
+                raise GeminiUnavailable(
+                    None, "Gemini に接続できませんでした。", cause_type=type(error).__name__,
+                ) from None
+            except (TimeoutError, socket.timeout, ConnectionError, http.client.HTTPException,
+                    json.JSONDecodeError, UnicodeError) as error:
+                raise GeminiUnavailable(
+                    None, "Gemini の応答を読み取れませんでした。", cause_type=type(error).__name__,
+                ) from None
     raise GeminiUnavailable(503, "Gemini が混雑しています。")
 
 
@@ -468,7 +492,7 @@ def _recording_contains_secret(responses, env):
 def _recording_secret_error():
     reason = "記録を保存しませんでした：応答に認証情報が含まれる可能性があります。"
     print(reason)
-    raise GeminiUnavailable(None, reason)
+    raise RecordingSecretError(None, reason)
 
 
 def _save_recording(responses, env):
@@ -519,14 +543,20 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
 
         try:
             run_agent(recorded_model, env)
-        except GeminiUnavailable as original:
-            if mode != "auto" or read_json(approvals_path(), []):
+        except Exception as original:
+            if mode != "auto" or record or isinstance(original, RecordingSecretError) or _item_counts() != (0, 0):
                 raise
             try:
                 state["replay"] = _replay_responses()
             except (OSError, ValueError, KeyError, TypeError):
                 raise original from None
-            log_decision("ai", "replay_mode", {"reason": f"Gemini unavailable ({original.code or 'connection'})"})
+            cause_type = original.cause_type if isinstance(original, GeminiUnavailable) else None
+            replay_detail = {"reason": f"Gemini unavailable ({cause_type or type(original).__name__})"}
+            if type(original).__name__ == "DemoLimitReached" and getattr(original, "scope", None) in {
+                "visitor_hour", "visitor_day", "global_day",
+            }:
+                replay_detail["scope"] = original.scope
+            log_decision("ai", "replay_mode", replay_detail)
             run_agent(replay_model, env)
             return "replay"
         if record:
