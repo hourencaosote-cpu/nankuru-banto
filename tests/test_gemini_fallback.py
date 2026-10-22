@@ -149,7 +149,7 @@ class GeminiFallbackTests(unittest.TestCase):
                 self.approvals.unlink()
                 self.log.unlink()
 
-    def test_auto_never_replays_after_proposal_is_written(self):
+    def test_cli_auto_never_replays_after_proposal_is_written(self):
         self._recording()
         responses = [answer(call("propose_stay_extension", guest_id="G001", nights=2,
                                  reason="Official cancellation.", message_draft="We can extend your stay."))]
@@ -160,11 +160,42 @@ class GeminiFallbackTests(unittest.TestCase):
             raise agent.GeminiUnavailable(503, "busy")
 
         with self.assertRaises(agent.GeminiUnavailable):
-            agent.run_ai({}, call_model=model, mode="auto", web=True)
+            agent.run_ai({}, call_model=model, mode="auto", web=False)
         self.assertEqual(len(json.loads(self.approvals.read_text(encoding="utf-8"))), 1)
         self.assertNotIn("replay_mode", [entry["action"] for entry in self._entries()])
 
-    def test_auto_never_replays_after_partial_proposal_or_staff_note(self):
+    def test_web_auto_rolls_back_two_proposals_then_replays(self):
+        self._recording()
+        self.approvals.write_text("[]", encoding="utf-8")
+        self.log.write_text(json.dumps({"action": "existing_event", "detail": {}}) + "\n", encoding="utf-8")
+        responses = [answer(
+            call("propose_stay_extension", guest_id="G001", nights=2,
+                 reason="Official cancellation.", message_draft="We can extend your stay."),
+            call("propose_stay_extension", guest_id="G002", nights=1,
+                 reason="Official cancellation.", message_draft="We can extend your stay."),
+        )]
+
+        def model(_env, _contents):
+            if responses:
+                return responses.pop(0)
+            raise TimeoutError("private timeout detail")
+
+        self.assertEqual(agent.run_ai({}, call_model=model, mode="auto", web=True), "replay")
+        items = json.loads(self.approvals.read_text(encoding="utf-8"))
+        self.assertEqual(sum(item["type"] == "extension" for item in items), 3)
+        self.assertEqual(sum(item["type"] == "staff_note" for item in items), 1)
+        entries = self._entries()
+        actions = [entry["action"] for entry in entries]
+        self.assertEqual(actions[0], "existing_event")
+        self.assertEqual(actions.count("proposed_extension"), 5)
+        self.assertLess(actions.index("live_run_rolled_back"), actions.index("replay_mode"))
+        rollback = next(entry["detail"] for entry in entries if entry["action"] == "live_run_rolled_back")
+        self.assertEqual(rollback, {"reason": "TimeoutError", "removed_items": 2})
+        rollback_entry = next(entry for entry in entries if entry["action"] == "live_run_rolled_back")
+        self.assertEqual(web_app._log_view(rollback_entry, {}, 0, {})["label"], "Live AI run rolled back")
+        self.assertNotIn("private timeout detail", self.log.read_text(encoding="utf-8"))
+
+    def test_web_auto_with_existing_proposal_never_rolls_back_or_replays(self):
         for name, args in (
             ("propose_stay_extension", {"guest_id": "G001", "nights": 2,
                                          "reason": "Official cancellation.", "message_draft": "A safe extension is available."}),
@@ -172,6 +203,8 @@ class GeminiFallbackTests(unittest.TestCase):
         ):
             with self.subTest(first_write=name):
                 self._recording()
+                existing = {"id": "P001", "guest_id": "G003", "type": "extension", "status": "pending"}
+                self.approvals.write_text(json.dumps([existing]), encoding="utf-8")
                 calls = [answer(call(name, **args))]
 
                 def model(_env, _contents):
@@ -181,10 +214,82 @@ class GeminiFallbackTests(unittest.TestCase):
 
                 with self.assertRaises(TimeoutError):
                     agent.run_ai({}, call_model=model, mode="auto", web=True)
-                self.assertEqual(len(json.loads(self.approvals.read_text(encoding="utf-8"))), 1)
+                items = json.loads(self.approvals.read_text(encoding="utf-8"))
+                self.assertEqual(len(items), 2)
+                self.assertEqual(items[0], existing)
                 self.assertNotIn("replay_mode", [entry["action"] for entry in self._entries()])
+                self.assertNotIn("live_run_rolled_back", [entry["action"] for entry in self._entries()])
                 self.approvals.unlink()
                 self.log.unlink()
+
+    def test_record_mode_partial_failure_never_rolls_back_or_replays(self):
+        self._recording()
+        responses = [answer(call("propose_stay_extension", guest_id="G001", nights=2,
+                                 reason="Official cancellation.", message_draft="A safe extension is available."))]
+
+        def model(_env, _contents):
+            if responses:
+                return responses.pop(0)
+            raise TimeoutError("timed out")
+
+        with self.assertRaises(TimeoutError):
+            agent.run_ai({}, call_model=model, record=True, web=True)
+        self.assertEqual(len(json.loads(self.approvals.read_text(encoding="utf-8"))), 1)
+        self.assertNotIn("live_run_rolled_back", [entry["action"] for entry in self._entries()])
+        self.assertNotIn("replay_mode", [entry["action"] for entry in self._entries()])
+
+    def test_recording_secret_error_never_rolls_back_or_replays(self):
+        self._recording()
+        responses = [answer(call("propose_stay_extension", guest_id="G001", nights=2,
+                                 reason="Official cancellation.", message_draft="A safe extension is available."))]
+
+        def model(_env, _contents):
+            if responses:
+                return responses.pop(0)
+            raise agent.RecordingSecretError(None, "Recording stopped")
+
+        with self.assertRaises(agent.RecordingSecretError):
+            agent.run_ai({}, call_model=model, mode="auto", web=True)
+        self.assertEqual(len(json.loads(self.approvals.read_text(encoding="utf-8"))), 1)
+        self.assertNotIn("live_run_rolled_back", [entry["action"] for entry in self._entries()])
+        self.assertNotIn("replay_mode", [entry["action"] for entry in self._entries()])
+
+    def test_failed_rollback_raises_original_error_without_replay(self):
+        self._recording()
+        responses = [answer(call("propose_stay_extension", guest_id="G001", nights=2,
+                                 reason="Official cancellation.", message_draft="A safe extension is available."))]
+
+        def model(_env, _contents):
+            if responses:
+                return responses.pop(0)
+            raise TimeoutError("timed out")
+
+        original_write = agent.write_json
+
+        def write_or_fail(path, items):
+            if items == []:
+                raise OSError("rollback unavailable")
+            return original_write(path, items)
+
+        with mock.patch.object(agent, "write_json", side_effect=write_or_fail):
+            with self.assertRaises(TimeoutError):
+                agent.run_ai({}, call_model=model, mode="auto", web=True)
+        self.assertEqual(len(json.loads(self.approvals.read_text(encoding="utf-8"))), 1)
+        self.assertNotIn("replay_mode", [entry["action"] for entry in self._entries()])
+
+    def test_thinking_level_is_only_sent_when_configured(self):
+        self.assertIn("GEMINI_THINKING_LEVEL", common.ENV_KEYS)
+        for level in ("", "low"):
+            with self.subTest(level=level):
+                response = mock.MagicMock()
+                response.__enter__.return_value.read.return_value = json.dumps(answer({"text": "Done."})).encode()
+                with mock.patch("urllib.request.urlopen", return_value=response) as urlopen:
+                    agent.call_gemini({"GEMINI_API_KEY": "test-key", "GEMINI_THINKING_LEVEL": level}, [])
+                body = json.loads(urlopen.call_args.args[0].data)
+                if level:
+                    self.assertEqual(body["generationConfig"]["thinkingConfig"], {"thinkingLevel": level})
+                else:
+                    self.assertNotIn("generationConfig", body)
 
     def test_record_mode_timeout_never_replays(self):
         self._recording()

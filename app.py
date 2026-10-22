@@ -86,6 +86,7 @@ ACTION_LABELS = {
     "ai_capacity_blocked": "AI capacity is busy",
     "workspace_busy": "Previous action still running",
     "replay_mode": "Demo replay used recorded Gemini responses",
+    "live_run_rolled_back": "Live AI run rolled back",
     "gemini_model_used": "Gemini model responded",
 }
 

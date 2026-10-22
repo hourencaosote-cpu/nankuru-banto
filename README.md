@@ -138,6 +138,7 @@ tests/              Offline tests
 
 ## Notes
 
+- `GEMINI_THINKING_LEVEL=low` makes Gemini 3 respond faster.
 - Each visitor has a private demo workspace, cleared after 24 hours of inactivity; demo AI runs and invoice creation have per-visitor and daily limits.
 - Demo replay is labeled on screen and still runs the real safety gate; invoices require manager approval. Web AI checks use `AI_RUN_BUDGET_SECONDS` (default 150); CLI recording has no run deadline. Optional `GEMINI_FALLBACK_MODELS` lists backup models separated by commas.
 - **All data is fictional.** Guests, flights and the inn are invented. No real guest data is sent to any AI service.

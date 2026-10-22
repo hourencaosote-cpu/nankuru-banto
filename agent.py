@@ -24,7 +24,7 @@ import urllib.request
 from contextvars import ContextVar
 from datetime import date, datetime
 
-from common import DATA_DIR, approvals_path, load_env, log_decision, read_json, write_json
+from common import DATA_DIR, approvals_path, load_env, log_decision, log_path, read_json, write_json
 
 MAX_STEPS = 20            # AI が道具を使える回数の上限（暴走防止）
 MAX_NIGHTS = 3            # 延泊は最大3泊まで
@@ -369,6 +369,9 @@ def call_gemini(env, contents):
         "contents": contents,
         "tools": [{"functionDeclarations": TOOLS}],
     }
+    thinking_level = env.get("GEMINI_THINKING_LEVEL", "").strip()
+    if thinking_level:
+        body.setdefault("generationConfig", {})["thinkingConfig"] = {"thinkingLevel": thinking_level}
     models = [state["model"]]
     if state["completed_calls"] == 0:
         models.extend(model for model in state["fallbacks"] if model != state["model"])
@@ -518,6 +521,14 @@ def _item_counts():
     )
 
 
+def _log_line_count():
+    try:
+        with open(log_path(), "rb") as log_file:
+            return sum(1 for _ in log_file)
+    except FileNotFoundError:
+        return 0
+
+
 def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reason=None):
     mode = mode or env.get("AI_MODE", "auto").strip().lower()
     if record:
@@ -526,6 +537,8 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
         raise GeminiUnavailable(None, "AI_MODE の設定が正しくありません。")
     state = _new_run_state(env, web)
     before_counts = _item_counts() if record else None
+    before_items = read_json(approvals_path(), []) if mode == "auto" and web else None
+    before_log_lines = _log_line_count() if before_items is not None else None
     token = _run_state.set(state)
     try:
         if mode == "replay":
@@ -550,7 +563,27 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
         try:
             run_agent(recorded_model, env)
         except Exception as original:
-            if mode != "auto" or record or isinstance(original, RecordingSecretError) or _item_counts() != (0, 0):
+            if mode != "auto" or record or isinstance(original, RecordingSecretError):
+                raise
+            if web:
+                if not isinstance(before_items, list) or any(
+                    item.get("type") in {"extension", "staff_note"} for item in before_items
+                ):
+                    raise
+                try:
+                    current_items = read_json(approvals_path(), [])
+                    if not isinstance(current_items, list) or _log_line_count() < before_log_lines:
+                        raise ValueError("Workspace state changed during the AI run")
+                    removed_items = max(0, len(current_items) - len(before_items))
+                    write_json(approvals_path(), before_items)
+                    log_decision("ai", "live_run_rolled_back", {
+                        "reason": original.cause_type if isinstance(original, GeminiUnavailable) and original.cause_type
+                        else type(original).__name__,
+                        "removed_items": removed_items,
+                    })
+                except Exception:
+                    raise original from None
+            elif _item_counts() != (0, 0):
                 raise
             try:
                 state["replay"] = _replay_responses()
