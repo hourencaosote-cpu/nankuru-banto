@@ -62,6 +62,7 @@ STATUS_LABELS = {
 ACTION_LABELS = {
     "proposed_extension": "Stay extension proposed",
     "rejected_proposal": "Safety gate blocked a proposal",
+    "draft_rewrite_requested": "Draft rewrite requested",
     "duplicate_staff_note": "Duplicate staff follow-up blocked",
     "notified_staff": "Staff follow-up created",
     "finished": "AI review completed",

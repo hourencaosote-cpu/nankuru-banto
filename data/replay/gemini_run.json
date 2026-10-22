@@ -8,14 +8,14 @@
               "functionCall": {
                 "name": "list_guests",
                 "args": {},
-                "id": "call_296874"
+                "id": "call_294189"
               }
             },
             {
               "functionCall": {
                 "name": "get_social_posts",
                 "args": {},
-                "id": "call_296875"
+                "id": "call_294190"
               }
             }
           ],
@@ -27,20 +27,20 @@
       }
     ],
     "usageMetadata": {
-      "promptTokenCount": 882,
+      "promptTokenCount": 937,
       "candidatesTokenCount": 22,
-      "totalTokenCount": 1193,
+      "totalTokenCount": 1492,
       "promptTokensDetails": [
         {
           "modality": "TEXT",
-          "tokenCount": 882
+          "tokenCount": 937
         }
       ],
-      "thoughtsTokenCount": 289,
+      "thoughtsTokenCount": 533,
       "serviceTier": "standard"
     },
     "modelVersion": "gemini-3.8-flash",
-    "responseId": "A-_SatPzFrzwrfcP3KvfoQM"
+    "responseId": "13XZao_jLdHprfcPo-mLoQk"
   },
   {
     "candidates": [
@@ -53,7 +53,7 @@
                 "args": {
                   "flight": "DEMO-101"
                 },
-                "id": "call_1440714"
+                "id": "call_410077"
               }
             },
             {
@@ -62,7 +62,7 @@
                 "args": {
                   "flight": "DEMO-202"
                 },
-                "id": "call_1440715"
+                "id": "call_410078"
               }
             },
             {
@@ -71,7 +71,7 @@
                 "args": {
                   "flight": "DEMO-303"
                 },
-                "id": "call_1440716"
+                "id": "call_410079"
               }
             },
             {
@@ -80,7 +80,7 @@
                 "args": {
                   "flight": "DEMO-404"
                 },
-                "id": "call_1440717"
+                "id": "call_410080"
               }
             },
             {
@@ -89,7 +89,7 @@
                 "args": {
                   "flight": "DEMO-505"
                 },
-                "id": "call_1440718"
+                "id": "call_410081"
               }
             }
           ],
@@ -101,20 +101,20 @@
       }
     ],
     "usageMetadata": {
-      "promptTokenCount": 1744,
+      "promptTokenCount": 2043,
       "candidatesTokenCount": 115,
-      "totalTokenCount": 2186,
+      "totalTokenCount": 2435,
       "promptTokensDetails": [
         {
           "modality": "TEXT",
-          "tokenCount": 1744
+          "tokenCount": 2043
         }
       ],
-      "thoughtsTokenCount": 327,
+      "thoughtsTokenCount": 277,
       "serviceTier": "standard"
     },
     "modelVersion": "gemini-3.8-flash",
-    "responseId": "B-_Sarv-E9TD0-kPj8idmQg"
+    "responseId": "DnbZapKkLbbU1e8P8fqe6AM"
   },
   {
     "candidates": [
@@ -126,47 +126,47 @@
                 "name": "propose_stay_extension",
                 "args": {
                   "reason": "Flight DEMO-101 has been cancelled, and the next available flight is on August 9, 2026.",
-                  "message_draft": "Dear Emily Carter, we have confirmed that your flight DEMO-101 has been cancelled due to the approaching typhoon. To ensure your safety and comfort, we would like to offer an extension of your stay until your next available flight.",
+                  "nights": 2,
                   "guest_id": "G001",
-                  "nights": 2
+                  "message_draft": "Dear Emily Carter, we have verified that your departure flight DEMO-101 has been cancelled due to the approaching typhoon, and the next available flight is on August 9, 2026. For your safety and comfort, we would like to offer an extension of your stay with us."
                 },
-                "id": "call_3617715"
+                "id": "call_352442"
               }
             },
             {
               "functionCall": {
                 "name": "propose_stay_extension",
                 "args": {
-                  "reason": "Flight DEMO-202 has been cancelled, and the next available flight is on August 8, 2026.",
+                  "nights": 1,
                   "guest_id": "G002",
-                  "message_draft": "김민지 님, 태풍의 영향으로 이용 예정이셨던 DEMO-202편이 결航된 것으로 확인되었습니다. 고객님의 안전과 편안한 체류를 위해 다음 이용 가능한 항공편 날짜까지 연박을 제안해 드립니다.",
-                  "nights": 1
+                  "message_draft": "김민지 고객님, 태풍의 영향으로 예약하신 항공편 DEMO-202편이 결항되었으며, 다음 이용 가능한 항공편은 2026년 8월 8일로 확인되었습니다. 고객님의 안전과 편안한 휴식을 위해 숙소 연박을 제안해 드립니다.",
+                  "reason": "Flight DEMO-202 has been cancelled, and the next available flight is on August 8, 2026."
                 },
-                "id": "call_3617716"
+                "id": "call_352443"
               }
             },
             {
               "functionCall": {
                 "name": "propose_stay_extension",
                 "args": {
-                  "message_draft": "田中健様、台風の接近に伴い、ご搭乗予定のDEMO-303便の欠航が確認されました。お客様の安全と快適なご滞在のため、次の搭乗可能便の日程まで延泊をご提案いたします。",
                   "guest_id": "G003",
                   "reason": "Flight DEMO-303 has been cancelled, and the next available flight is on August 10, 2026.",
+                  "message_draft": "田中 健様、台風の接近に伴いご搭乗予定のDEMO-303便が欠航となり、次に利用可能な便は2026年8月10日と確認されました。お客様の安全確保のため、当館での延泊をご提案いたします。",
                   "nights": 3
                 },
-                "id": "call_3617717"
+                "id": "call_352444"
               }
             },
             {
               "functionCall": {
                 "name": "propose_stay_extension",
                 "args": {
-                  "guest_id": "G004",
+                  "message_draft": "刘伟先生，因台风影响，您预订的DEMO-404航班已经取消，下一班可用航班为2026年8月8日。为了您的安全与舒适，我们为您准备了延住方案。",
                   "nights": 1,
-                  "message_draft": "刘伟先生/女士，受台风影响，您原定乘坐的DEMO-404航班已确认取消。为了确保您的安全与舒适，我们建议您续住至下一班可搭乘的航班。",
+                  "guest_id": "G004",
                   "reason": "Flight DEMO-404 has been cancelled, and the next available flight is on August 8, 2026."
                 },
-                "id": "call_3617718"
+                "id": "call_352445"
               }
             }
           ],
@@ -178,20 +178,20 @@
       }
     ],
     "usageMetadata": {
-      "promptTokenCount": 2671,
-      "candidatesTokenCount": 482,
-      "totalTokenCount": 4564,
+      "promptTokenCount": 2920,
+      "candidatesTokenCount": 519,
+      "totalTokenCount": 4787,
       "promptTokensDetails": [
         {
           "modality": "TEXT",
-          "tokenCount": 2671
+          "tokenCount": 2920
         }
       ],
-      "thoughtsTokenCount": 1411,
+      "thoughtsTokenCount": 1348,
       "serviceTier": "standard"
     },
     "modelVersion": "gemini-3.8-flash",
-    "responseId": "Fe_SaqyoD4772roPs-LS6Ac"
+    "responseId": "XXbZasfuJ9TV9tMPmKzfgAU"
   },
   {
     "candidates": [
@@ -202,10 +202,10 @@
               "functionCall": {
                 "name": "notify_staff",
                 "args": {
-                  "note": "Guest Liu Wei booked via OTA and flight DEMO-404 is cancelled with next availability on August 8, 2026. Please handle this case manually as OTA reservations cannot be billed directly and no extension rooms remain.",
-                  "guest_id": "G004"
+                  "guest_id": "G004",
+                  "note": "The guest booked via OTA and flight DEMO-404 is cancelled with the next flight on August 8, 2026. Since no extension rooms remain and OTA bookings cannot be billed directly, please handle this case manually."
                 },
-                "id": "call_3608886"
+                "id": "call_391187"
               }
             }
           ],
@@ -217,20 +217,20 @@
       }
     ],
     "usageMetadata": {
-      "promptTokenCount": 4782,
-      "candidatesTokenCount": 74,
-      "totalTokenCount": 5082,
+      "promptTokenCount": 5005,
+      "candidatesTokenCount": 75,
+      "totalTokenCount": 5297,
       "promptTokensDetails": [
         {
           "modality": "TEXT",
-          "tokenCount": 4782
+          "tokenCount": 5005
         }
       ],
-      "thoughtsTokenCount": 226,
+      "thoughtsTokenCount": 217,
       "serviceTier": "standard"
     },
     "modelVersion": "gemini-3.8-flash",
-    "responseId": "Ie_Saoe9G9zhrfcPmZqw6QM"
+    "responseId": "pnbZav71Mu2v9tMP5YHjsA4"
   },
   {
     "candidates": [
@@ -238,7 +238,7 @@
         "content": {
           "parts": [
             {
-              "text": "### Summary of Actions\n\nAll departure flight statuses were verified using official flight data. Unverified social media posts were disregarded.\n\n1. **Emily Carter (G001)**: Flight DEMO-101 cancelled (next flight: August 9, 2026). Proposed a 2-night stay extension pending staff approval.\n2. **Kim Minji (G002)**: Flight DEMO-202 cancelled (next flight: August 8, 2026). Proposed a 1-night stay extension pending staff approval.\n3. **Ken Tanaka (G003)**: Flight DEMO-303 cancelled (next flight: August 10, 2026). Proposed a 3-night stay extension pending staff approval.\n4. **Liu Wei (G004)**: Flight DEMO-404 cancelled (next flight: August 8, 2026). Extension proposal could not proceed due to OTA channel restrictions and room capacity limits. Notified hotel staff for manual handling.\n5. **Sophie Martin (G005)**: Flight DEMO-505 is on time; no action required."
+              "text": "### Flight Verification & Stay Extension Actions Summary\n\nAll guest flight schedules were verified using official flight status information. Unverified social media posts were disregarded per operating guidelines.\n\n- **Emily Carter (G001)**: Flight DEMO-101 is cancelled (next available flight: August 9, 2026). Submitted a 2-night extension proposal (Proposal ID: P001) awaiting staff approval.\n- **Kim Minji (G002)**: Flight DEMO-202 is cancelled (next available flight: August 8, 2026). Submitted a 1-night extension proposal (Proposal ID: P002) awaiting staff approval.\n- **Ken Tanaka (G003)**: Flight DEMO-303 is cancelled (next available flight: August 10, 2026). Submitted a 3-night extension proposal (Proposal ID: P003) awaiting staff approval.\n- **Liu Wei (G004)**: Flight DEMO-404 is cancelled (next available flight: August 8, 2026). The extension proposal was rejected because the reservation was made via OTA and extension room capacity was reached; notified staff for manual handling.\n- **Sophie Martin (G005)**: Flight DEMO-505 is on time; no extension needed."
             }
           ],
           "role": "model"
@@ -248,19 +248,19 @@
       }
     ],
     "usageMetadata": {
-      "promptTokenCount": 5108,
-      "candidatesTokenCount": 252,
-      "totalTokenCount": 5947,
+      "promptTokenCount": 5323,
+      "candidatesTokenCount": 293,
+      "totalTokenCount": 5950,
       "promptTokensDetails": [
         {
           "modality": "TEXT",
-          "tokenCount": 5108
+          "tokenCount": 5323
         }
       ],
-      "thoughtsTokenCount": 587,
+      "thoughtsTokenCount": 334,
       "serviceTier": "standard"
     },
     "modelVersion": "gemini-3.8-flash",
-    "responseId": "JO_SateCJu221e8P64rc8Qc"
+    "responseId": "1nbZaorsFI7Z1e8Pr97VuA4"
   }
 ]

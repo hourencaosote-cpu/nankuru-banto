@@ -588,6 +588,78 @@ class AppSafetyTests(unittest.TestCase):
         self.assertIn("GATE · G999", page)
         self.assertNotIn("GATE · G004", page)
 
+    def test_korean_hanja_draft_requests_rewrite_then_accepts_hangul(self):
+        reason = "韓国語の案内文に漢字が含まれています。ハングルだけで書き直して、もう一度 propose_stay_extension を呼んでください。"
+        args = {
+            "guest_id": "G002",
+            "nights": 1,
+            "reason": "Official flight cancellation.",
+            "message_draft": "DEMO-202편이 결航되었습니다.",
+        }
+
+        self.assertEqual(
+            agent.tool_propose_stay_extension(args),
+            {"accepted": False, "reasons": [reason]},
+        )
+        self.assertEqual(self._read_approvals(), [])
+        entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["action"], "draft_rewrite_requested")
+        self.assertEqual(entries[0]["detail"], {"guest_id": "G002", "reason": reason})
+        self.assertNotIn(args["message_draft"], self.log_path.read_text(encoding="utf-8"))
+
+        dashboard = web_app.build_dashboard()
+        self.assertEqual(dashboard["gate_events"], [])
+        self.assertEqual(dashboard["activity"][0]["label"], "Draft rewrite requested")
+
+        args["message_draft"] = "DEMO-202편이 결항되었습니다. 연박 안내를 확인해 주세요."
+        accepted = agent.tool_propose_stay_extension(args)
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(len(self._read_approvals()), 1)
+
+    def test_korean_extension_a_character_also_requests_rewrite(self):
+        result = agent.tool_propose_stay_extension({
+            "guest_id": "G002", "nights": 1, "reason": "Official cancellation.",
+            "message_draft": "㐀 결항되었습니다.",
+        })
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["reasons"][0], "韓国語の案内文に漢字が含まれています。ハングルだけで書き直して、もう一度 propose_stay_extension を呼んでください。")
+        self.assertEqual(self._read_approvals(), [])
+
+    def test_chinese_and_japanese_drafts_with_han_characters_are_accepted(self):
+        data_path = self.data_dir / "guests.json"
+        data = json.loads(data_path.read_text(encoding="utf-8"))
+        next(guest for guest in data["guests"] if guest["id"] == "G004")["booking_channel"] = "direct"
+        data_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        for guest_id, nights, draft in (
+            ("G004", 1, "航班已取消，请确认延住安排。"),
+            ("G003", 3, "便が欠航しました。延泊をご案内します。"),
+        ):
+            with self.subTest(guest_id=guest_id):
+                result = agent.tool_propose_stay_extension({
+                    "guest_id": guest_id, "nights": nights,
+                    "reason": "Official cancellation.", "message_draft": draft,
+                })
+                self.assertTrue(result["accepted"])
+        self.assertEqual(len(self._read_approvals()), 2)
+
+    def test_ota_rejection_takes_priority_over_korean_draft_rewrite(self):
+        data_path = self.data_dir / "guests.json"
+        data = json.loads(data_path.read_text(encoding="utf-8"))
+        next(guest for guest in data["guests"] if guest["id"] == "G004")["language"] = "Korean"
+        data_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+        result = agent.tool_propose_stay_extension({
+            "guest_id": "G004", "nights": 1, "reason": "Official cancellation.",
+            "message_draft": "결航 안내입니다.",
+        })
+        self.assertFalse(result["accepted"])
+        self.assertTrue(any("OTA" in reason for reason in result["reasons"]))
+        self.assertEqual(self._read_approvals(), [])
+        entries = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([entry["action"] for entry in entries], ["rejected_proposal"])
+
 
 if __name__ == "__main__":
     unittest.main()
