@@ -2,6 +2,12 @@
 
 **An AI night-shift front desk for small inns. When a typhoon cancels flights, it finds the stranded guests, proposes stay extensions in each guest's language, and closes the loop with PayPal invoices — while code-enforced safety rules and a human manager stay in control of every dollar.**
 
+**▶ Demo video (2:47):** https://youtu.be/Pxj6ZQWFPPs
+
+**▶ Live demo:** https://nankuru-banto.onrender.com — open it, press **Reset demo**, then **Run AI check**.
+
+The free server sleeps when idle, so the first load can take up to a minute.
+
 Built for the [PayPal AI Hackathon 2026](https://paypalaihackathon.devpost.com/).
 
 > *Nankuru* comes from the Okinawan phrase *nankuru naisa* — "it'll work out." A *bantō* is the head clerk who keeps a Japanese inn running.
@@ -10,11 +16,11 @@ Built for the [PayPal AI Hackathon 2026](https://paypalaihackathon.devpost.com/)
 
 ## The problem
 
-Okinawa has about **3,900 places to stay, and roughly 9 in 10 are small**: hotels with fewer than 100 guests, guesthouses, pensions and rentals ([Okinawa Prefecture, 2023](https://www.pref.okinawa.lg.jp/_res/projects/default_project/_page_/001/026/290/r5-syukuhaku.pdf)). Typhoons regularly ground every flight for days — Typhoon No. 6 in 2023 cancelled **593 flights and affected about 110,000 travellers** in four days.
+Okinawa has about **3,900 places to stay, and roughly 9 in 10 are small**: hotels with fewer than 100 guests, guesthouses, pensions and rentals ([Okinawa Prefecture, 2023](https://www.pref.okinawa.lg.jp/_res/projects/default_project/_page_/001/026/290/r5-syukuhaku.pdf)). Typhoons can ground every flight for days.
 
 When that happens, someone at the front desk has to work out who cannot fly home, decide how many extra nights each guest needs, explain it in English, Korean or Chinese, take payment, and keep track of who paid — usually late at night, while rumours on social media demand full refunds. Large hotels have night managers for this. Small inns usually have one exhausted owner.
 
-The builder worked at a large resort hotel in Okinawa and a hotel in Hokkaido, and watched managers stay up past midnight on exactly this work during typhoons and blizzards.
+The builder has worked at hotels in Okinawa and Hokkaido, and has been on shift on typhoon days when flights were cancelled and guests couldn't go home.
 
 ## What it does
 
@@ -62,6 +68,7 @@ All calls use the **PayPal REST API in the Sandbox** ([`paypal_tools.py`](paypal
 - `POST /v1/oauth2/token` — OAuth 2.0 client-credentials login
 - `POST /v2/invoicing/invoices` — create the invoice (nights × nightly rate, inn's typhoon discount, guest message as the invoice note)
 - `POST /v2/invoicing/invoices/{id}/send` — send it to the guest
+- `POST /v2/invoicing/invoices/{id}/payments` — **Sandbox demo only:** a manager-pressed button that records an external payment, for judges who don't want to log in as the guest. The guest-pays-in-PayPal path is the primary flow.
 - `GET /v2/invoicing/invoices/{id}` — check status; `PAID` confirms the extension
 
 Paying the invoice **is** the guest's confirmation: no forms, no front-desk queue.
@@ -70,8 +77,9 @@ Paying the invoice **is** the guest's confirmation: no forms, no front-desk queu
 
 | Tool | Where | How |
 |---|---|---|
-| **Google Gemini API** (function calling) | Runtime — the agent | Investigates flights, proposes extensions, drafts multilingual guest messages, routes edge cases to staff |
-| **Claude** (Anthropic) | Development | Product design, UI mock-ups, logo, safety-rule design, code review and testing |
+| **Google Gemini API** (function calling) | Runtime — the agent (`gemini-3.8-flash`) | Investigates flights, proposes extensions, drafts multilingual guest messages, routes edge cases to staff |
+| **Claude** (Anthropic) | Development | Product design, UI mock-ups, logo, safety-rule design, code review and testing, demo video (Remotion) |
+| **Gemini TTS** | Demo video | English narration voice (the video says so in its description) |
 | **Codex** (OpenAI) | Development | Implemented the Flask dashboard and tests from written specs ([`AGENTS.md`](AGENTS.md)) |
 
 The manager dashboard uses AG Grid Community for its sortable guest and invoice tracker.
@@ -136,6 +144,13 @@ data/               Fictional guests, flights and inn policy
 tests/              Offline tests
 ```
 
+## Known limitations
+
+- The demo assumes the inn knows each guest's departure flight. Many small inns don't collect it yet — next step: the agent drafts a message asking the guest for their flight (see Roadmap).
+- Guests who booked through an online travel agency can't be invoiced by the inn, so the agent routes them to staff instead of charging them.
+- PayPal runs in the Sandbox only; flight data is fictional. A production version would read a live official flight-status feed.
+- The free hosting plan sleeps when idle and keeps demo data in a private per-visitor workspace that resets after 24 hours.
+
 ## Notes
 
 - `GEMINI_THINKING_LEVEL=low` makes Gemini 3 respond faster.
@@ -147,9 +162,10 @@ tests/              Offline tests
 
 ## Roadmap
 
-- Cancellation and refund flow
+- Ask guests for their departure flight when the inn doesn't know it (drafted in the guest's language, sent by staff)
+- OTA guests: a drafted message explaining how to extend through their travel site
 - Heavy-snow mode (Hokkaido airports)
-- Staff shift check-ins drafted by the AI, approved by the manager
+- Cancellation and refund flow
 - Live official flight-status feeds
 
 ## License

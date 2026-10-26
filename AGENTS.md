@@ -43,40 +43,4 @@ staff_note：pending → acknowledged / dismissed。
 9. **判断はすべて log_decision で記録する**（AI の提案、gate の却下、人の承認・却下、支払い確認）。
 10. 新しいライブラリは最小限に。追加したら requirements.txt に書く。
 
-## 次のタスク：責任者向けの Web 画面
-
-デザインの見本：Claude で作った「ナンクル番頭 承認画面」（Main＝責任者画面、Guest＝客のスマホ）。
-見本の配置・文言・色に合わせる。画面の文字は英語。
-
-### 作るもの
-- Flask の `app.py` を1つ追加。`python3 app.py` で http://localhost:5001 に画面が出る（macOS は 5000 番を AirPlay が使うため）。
-- テンプレートは `templates/`、CSS は `static/`。JavaScript は最小限（フォーム送信で十分）。
-
-### 画面の中身（見本の Main に合わせる）
-- 上部：宿名、台風の状況、データ時刻と「official notices only」、「Run AI check」ボタン
-- 数字4つ：チェックアウト予定人数／欠航数／延泊に使える残り空室／延泊売上（支払い済み・未払い）
-- 左：宿泊客一覧（便の状態、今の対応状況）
-- 中央：承認待ちの提案カード（金額・内訳・根拠・AIの理由・客に届く案内文。システムが足した段落は印を付ける）
-  と「Approve & send PayPal invoice」「Reject」「Later」ボタン。スタッフ連絡カードには「Mark as handled」
-- 右：Safety gate（gate が止めた提案と理由、無視した SNS 投稿、ルール一覧）と AI の作業ログ
-- 「Check payments」ボタン：check_payments と同じ処理で、支払い済みを confirmed にする
-
-### 作り方の条件
-- 既存の処理を**再利用**する。approve.py と check_payments.py の中身は関数に分け（例：
-  `approve_extension(item_id)`、`reject(item_id)`、`check_payments()`）、ターミナル版と Web 版の両方から呼ぶ。
-  同じ処理をコピーして2か所に書かない。
-- 「Run AI check」は agent.run_agent(agent.call_gemini, env) を呼ぶ。完了まで数十秒かかるので、
-  処理中の表示を出す。AI の作業ログは logs/decision_log.jsonl から表示する。
-- gate の却下理由は decision_log の `rejected_proposal` から表示する。
-- Approve を押したときだけ PayPal を呼ぶ。GET リクエストでお金が動く処理を書かない（POST のみ）。
-- エラー（Gemini の混雑、PayPal の失敗）は画面に日本語ではなく英語で分かりやすく出し、処理は止めない。
-
-### 完成の条件（これを満たしたら完了）
-1. `python3 app.py` で画面が開く
-2. Run AI check → 提案3件・スタッフ連絡1件・gate の却下・SNS 無視が画面に出る
-3. Approve → PayPal sandbox に請求書が送られ、カードが「Invoice sent」に変わる
-4. 客側で支払い → Check payments → 「Paid · extension confirmed」に変わる
-5. ターミナル版（agent.py / approve.py / check_payments.py）も今まで通り動く
-6. 上の「絶対に守るルール」を1つも破っていない
-
-作業が終わったら、変えたファイルと変更内容の一覧を出してください（監査に使います）。
+Web 画面は実装済み（app.py / templates / static）。変更時も上のルールを守ること。
