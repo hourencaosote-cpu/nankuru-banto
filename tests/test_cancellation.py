@@ -98,7 +98,7 @@ class CancellationTests(unittest.TestCase):
                                                  "guest_name": "Kim Minji", "nights": 1, "status": "sent"}])
         self.assertNotIn("INV-1", json.dumps(listed))
         self.update()
-        result = agent.tool_propose_invoice_cancellation({"proposal_id": "P001", "reason": "Flight restored.",
+        result = agent.tool_propose_invoice_cancellation({"guest_id": "G002", "reason": "Flight restored.",
                                                            "message_draft": "연박이 필요하지 않습니다."})
         self.assertTrue(result["accepted"])
         item = self.queue()[-1]
@@ -107,8 +107,64 @@ class CancellationTests(unittest.TestCase):
         self.assertNotIn("invoice_id", item)
         self.assertEqual(self.entries()[-1]["action"], "proposed_cancellation")
 
+    def test_cancellation_tool_resolves_extension_from_guest_id(self):
+        extension = {**self.extension("approved"), "id": "P009"}
+        self.save([extension])
+        self.update()
+        declaration = next(tool for tool in agent.TOOLS if tool["name"] == "propose_invoice_cancellation")
+        self.assertEqual(declaration["parameters"]["required"], ["guest_id", "reason", "message_draft"])
+        self.assertNotIn("proposal_id", declaration["parameters"]["properties"])
+        result = agent.tool_propose_invoice_cancellation({
+            "guest_id": "G002", "reason": "Flight restored.", "message_draft": "연박이 필요하지 않습니다.",
+        })
+        self.assertTrue(result["accepted"])
+        self.assertEqual(self.queue()[-1]["proposal_id"], "P009")
+        missing = agent.tool_propose_invoice_cancellation({
+            "guest_id": "G999", "reason": "No extension.", "message_draft": "No payment is needed.",
+        })
+        self.assertFalse(missing["accepted"])
+        self.assertIn("存在しません", missing["reasons"][0])
+
+    def test_approval_rechecks_official_notice_before_create_or_saved_draft_send(self):
+        self.update()
+        message = "The official notice no longer shows this guest’s flight as cancelled. No invoice was created."
+        for status in ("pending", "approved"):
+            with self.subTest(status=status):
+                item = self.extension(status)
+                if status == "pending":
+                    item.pop("invoice_id")
+                self.save([item])
+                before = self.queue_path.read_bytes()
+                before_create = mock.Mock()
+                on_invoice_ready = mock.Mock()
+                with mock.patch.object(approve, "create_extension_invoice") as create, \
+                     mock.patch.object(approve, "send_invoice") as send, \
+                     mock.patch.object(approve, "load_env") as load_env, \
+                     mock.patch.object(approve, "get_invoice_status") as get_status:
+                    with self.assertRaisesRegex(ValueError, "The official notice no longer shows") as caught:
+                        approve.approve_extension("P001", before_create=before_create,
+                                                  on_invoice_ready=on_invoice_ready)
+                self.assertEqual(str(caught.exception), message)
+                self.assertEqual(self.queue_path.read_bytes(), before)
+                before_create.assert_not_called()
+                on_invoice_ready.assert_not_called()
+                create.assert_not_called()
+                send.assert_not_called()
+                load_env.assert_not_called()
+                get_status.assert_not_called()
+                entry = self.entries()[-1]
+                self.assertEqual(entry["action"], "approval_blocked_notice_changed")
+                self.assertEqual(entry["detail"], {"id": "P001", "guest_id": "G002",
+                                                   "flight": "DEMO-202", "status": "on_time"})
+                self.assertEqual(web_app.ACTION_LABELS[entry["action"]],
+                                 "Approval blocked: flight no longer cancelled")
+                self.assertIn("Approval blocked: flight no longer cancelled",
+                              self.client.get("/").get_data(as_text=True))
+        self.assertEqual(self.csrf_post("/proposals/P001/approve").status_code, 302)
+        self.assertIn(message, self.client.get("/").get_data(as_text=True))
+
     def test_gate_rejects_initial_paid_other_status_duplicate_blank_and_hanja(self):
-        args = {"proposal_id": "P001", "reason": "Flight restored.", "message_draft": "연박이 필요하지 않습니다."}
+        args = {"guest_id": "G002", "reason": "Flight restored.", "message_draft": "연박이 필요하지 않습니다."}
         self.save([self.extension()])
         self.assertFalse(agent.tool_propose_invoice_cancellation(args)["accepted"])
         self.update()

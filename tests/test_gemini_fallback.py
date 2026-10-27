@@ -142,11 +142,11 @@ class GeminiFallbackTests(unittest.TestCase):
         update_replay = self.data / "replay" / "gemini_update_run.json"
         update_replay.parent.mkdir(exist_ok=True)
         update_replay.write_text(json.dumps([
-            answer(call("propose_invoice_cancellation", proposal_id="P001", reason="Restored.",
+            answer(call("propose_invoice_cancellation", guest_id="G002", reason="Restored.",
                         message_draft="연박이 필요하지 않습니다.")),
             answer({"text": "Done."}),
         ]), encoding="utf-8")
-        args = {"proposal_id": "P001", "reason": "Live proposal.", "message_draft": "연박이 필요하지 않습니다."}
+        args = {"guest_id": "G002", "reason": "Live proposal.", "message_draft": "연박이 필요하지 않습니다."}
         calls = [answer(call("propose_invoice_cancellation", **args))]
 
         def model(_env, _contents):
@@ -166,7 +166,7 @@ class GeminiFallbackTests(unittest.TestCase):
         extension = {"id": "P001", "type": "extension", "guest_id": "G002", "guest_name": "Kim Minji",
                      "language": "Korean", "nights": 1, "status": "sent", "invoice_id": "INV-1"}
         self.approvals.write_text(json.dumps([extension]), encoding="utf-8")
-        args = {"proposal_id": "P001", "reason": "Live proposal.", "message_draft": "연박이 필요하지 않습니다."}
+        args = {"guest_id": "G002", "reason": "Live proposal.", "message_draft": "연박이 필요하지 않습니다."}
         calls = [answer(call("propose_invoice_cancellation", **args))]
 
         def model(_env, _contents):
@@ -187,7 +187,7 @@ class GeminiFallbackTests(unittest.TestCase):
         self._recording()
         original_replay = self.replay.read_bytes()
         update_replay = self.data / "replay" / "gemini_update_run.json"
-        responses = [answer(call("propose_invoice_cancellation", proposal_id="P001", reason="Restored.",
+        responses = [answer(call("propose_invoice_cancellation", guest_id="G002", reason="Restored.",
                                  message_draft="연박이 필요하지 않습니다.")), answer({"text": "Done."})]
 
         def model(_env, _contents):

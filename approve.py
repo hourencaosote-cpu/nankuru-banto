@@ -8,7 +8,10 @@
 使い方:  python3 approve.py
 """
 
-from common import approvals_path, load_env, log_decision, read_json, write_json
+import os
+
+import common
+from common import approvals_path, flights_path, load_env, log_decision, read_json, write_json
 from check_payments import PAID, confirm_invoice_if_paid
 from paypal_tools import (cancel_invoice, create_extension_invoice, delete_invoice_draft,
                           get_invoice_status, send_invoice)
@@ -44,6 +47,17 @@ def approve_extension(item_id, env=None, before_create=None, on_invoice_created=
         raise ValueError("Only stay-extension proposals can be approved here.")
     if item.get("status") not in ("pending", "approved"):
         raise ValueError("This proposal is no longer waiting for approval.")
+
+    guest_id = item.get("guest_id")
+    guest = next((entry for entry in read_json(os.path.join(common.DATA_DIR, "guests.json"), {}).get("guests", [])
+                  if entry.get("id") == guest_id), None)
+    flight_number = guest.get("departure_flight") if guest else None
+    flight_status = read_json(flights_path(), {}).get("flights", {}).get(flight_number, {}).get("status")
+    if flight_status != "cancelled":
+        log_decision("gate", "approval_blocked_notice_changed", {
+            "id": item_id, "guest_id": guest_id, "flight": flight_number, "status": flight_status,
+        })
+        raise ValueError("The official notice no longer shows this guest’s flight as cancelled. No invoice was created.")
 
     env = env or load_env()
     buyer_email = env.get("BUYER_EMAIL", "")

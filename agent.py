@@ -69,7 +69,7 @@ SYSTEM_PROMPT = """あなたは、台風の多い地域にある小さな宿の�
 - 割引率はあなたが決めない（宿のルールで決まっている）。
 - 延泊の泊数は、帰りの便の次の空き日までに必要な分だけにする。
 - 承認待ちリストにすでに延泊の提案がある客には、新しい延泊を提案しない（list_open_invoices で確認する）。
-- 延泊の請求書を下書き・送付済みの客の便が、公式情報で再開していたら、propose_invoice_cancellation で請求書の取り消しを提案する。
+- 延泊の請求書を下書き・送付済みの客の便が、公式情報で再開していたら、propose_invoice_cancellation に宿泊客ID（guest_id）を渡して請求書の取り消しを提案する。
   案内文には、便が再開したので延泊は不要になったこと、請求書は取り消すので支払いは不要であることを、宿泊客の言語で丁寧に書く（金額は書かない）。
   すでに支払われていたら取り消しは提案せず、notify_staff でスタッフに知らせる（返金はスタッフが判断する）。
 - 提案が却下されたら、その理由に従って対応を変える（例：OTA予約の客はスタッフへの連絡に切り替える）。
@@ -130,15 +130,15 @@ TOOLS = [
     },
     {
         "name": "propose_invoice_cancellation",
-        "description": "便の再開などで不要になった、まだ支払われていない延泊の請求書について、取り消しの提案を承認待ちリストに入れる。実行はされず、スタッフが承認するまで何も起きない。",
+        "description": "宿泊客IDから、便の再開などで不要になった、まだ支払われていない延泊の請求書を探し、取り消しの提案を承認待ちリストに入れる。実行はされず、スタッフが承認するまで何も起きない。",
         "parameters": {
             "type": "object",
             "properties": {
-                "proposal_id": {"type": "string"},
+                "guest_id": {"type": "string"},
                 "reason": {"type": "string", "description": "スタッフ向け英語1〜2文"},
                 "message_draft": {"type": "string", "description": "宿泊客の言語で書いた丁寧な案内文"},
             },
-            "required": ["proposal_id", "reason", "message_draft"],
+            "required": ["guest_id", "reason", "message_draft"],
         },
     },
 ]
@@ -289,18 +289,23 @@ def tool_propose_stay_extension(args):
 
 def tool_propose_invoice_cancellation(args):
     queue = _approvals()
-    proposal_id = args.get("proposal_id", "")
-    extension = next((item for item in queue if item.get("id") == proposal_id
-                      and item.get("type") == "extension"), None)
+    guest_id = args.get("guest_id", "")
+    extensions = [item for item in queue if item.get("type") == "extension"
+                  and item.get("guest_id") == guest_id]
+    extension = next((item for item in reversed(extensions)
+                      if item.get("status") in {"approved", "sent"}), None)
+    if extension is None and extensions:
+        extension = extensions[-1]
+    proposal_id = extension.get("id") if extension else None
     reasons = []
     if extension is None:
-        reasons.append("その延泊提案IDは存在しません。")
+        reasons.append("その客の延泊提案は存在しません。")
     elif extension.get("status") == "confirmed":
         reasons.append("この請求書はすでに支払われています。取り消しはできません。返金はスタッフが判断するので notify_staff で知らせてください。")
     elif extension.get("status") not in {"approved", "sent"}:
         reasons.append("請求書下書きか送付済みの延泊だけ取り消しを提案できます。")
     flight_data = _flights()
-    guest = _find_guest(extension.get("guest_id")) if extension else None
+    guest = _find_guest(guest_id)
     flight_number = guest.get("departure_flight") if guest else None
     flight = flight_data.get("flights", {}).get(flight_number, {})
     if extension is not None and flight.get("status") == "cancelled":
@@ -317,7 +322,7 @@ def tool_propose_invoice_cancellation(args):
         reasons.append("韓国語の案内文に漢字が含まれています。ハングルだけで書き直して、もう一度 propose_invoice_cancellation を呼んでください。")
     if reasons:
         log_decision("gate", "rejected_cancellation", {"proposal_id": proposal_id,
-                     "guest_id": extension.get("guest_id") if extension else None, "reasons": reasons})
+                     "guest_id": guest_id, "reasons": reasons})
         return {"accepted": False, "reasons": reasons}
 
     item = {
