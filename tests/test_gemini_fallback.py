@@ -40,12 +40,14 @@ class GeminiFallbackTests(unittest.TestCase):
         self.data.mkdir()
         shutil.copy(ROOT / "data" / "guests.json", self.data / "guests.json")
         shutil.copy(ROOT / "data" / "flights.json", self.data / "flights.json")
+        shutil.copy(ROOT / "data" / "flights_update.json", self.data / "flights_update.json")
         self.replay = self.data / "replay" / "gemini_run.json"
         self.approvals = self.data / "approvals.json"
         self.log = self.root / "decision_log.jsonl"
         self.patches = [
             mock.patch.object(agent, "DATA_DIR", str(self.data)),
             mock.patch.object(agent, "REPLAY_PATH", str(self.replay)),
+            mock.patch.object(agent, "UPDATE_REPLAY_PATH", str(self.data / "replay" / "gemini_update_run.json")),
             mock.patch("urllib.request.urlopen", side_effect=AssertionError("Network access forbidden")),
             mock.patch("builtins.print"),
         ]
@@ -130,6 +132,82 @@ class GeminiFallbackTests(unittest.TestCase):
         self.assertIn("rejected_proposal", actions)
         self.assertIn("replay_mode", actions)
         self.assertIn("replay_mode", web_app.ACTION_LABELS)
+
+    def test_update_auto_rolls_back_new_cancellation_and_replays_update_recording(self):
+        # This fixture uses explicit context paths, so set the scenario beside approvals.
+        common.write_json(str(self.data / "scenario.json"), {"notice": "update"})
+        extension = {"id": "P001", "type": "extension", "guest_id": "G002", "guest_name": "Kim Minji",
+                     "language": "Korean", "nights": 1, "status": "sent", "invoice_id": "INV-1"}
+        self.approvals.write_text(json.dumps([extension]), encoding="utf-8")
+        update_replay = self.data / "replay" / "gemini_update_run.json"
+        update_replay.parent.mkdir(exist_ok=True)
+        update_replay.write_text(json.dumps([
+            answer(call("propose_invoice_cancellation", proposal_id="P001", reason="Restored.",
+                        message_draft="연박이 필요하지 않습니다.")),
+            answer({"text": "Done."}),
+        ]), encoding="utf-8")
+        args = {"proposal_id": "P001", "reason": "Live proposal.", "message_draft": "연박이 필요하지 않습니다."}
+        calls = [answer(call("propose_invoice_cancellation", **args))]
+
+        def model(_env, _contents):
+            if calls:
+                return calls.pop(0)
+            raise TimeoutError("private failure")
+
+        self.assertEqual(agent.run_ai({}, call_model=model, mode="auto", web=True), "replay")
+        items = json.loads(self.approvals.read_text(encoding="utf-8"))
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0], extension)
+        self.assertEqual(items[1]["reason"], "Restored.")
+        self.assertIn("live_run_rolled_back", [entry["action"] for entry in self._entries()])
+
+    def test_update_auto_without_recording_reports_error_and_preserves_old_items(self):
+        common.write_json(str(self.data / "scenario.json"), {"notice": "update"})
+        extension = {"id": "P001", "type": "extension", "guest_id": "G002", "guest_name": "Kim Minji",
+                     "language": "Korean", "nights": 1, "status": "sent", "invoice_id": "INV-1"}
+        self.approvals.write_text(json.dumps([extension]), encoding="utf-8")
+        args = {"proposal_id": "P001", "reason": "Live proposal.", "message_draft": "연박이 필요하지 않습니다."}
+        calls = [answer(call("propose_invoice_cancellation", **args))]
+
+        def model(_env, _contents):
+            if calls:
+                return calls.pop(0)
+            raise TimeoutError("private failure")
+
+        with self.assertRaises(TimeoutError):
+            agent.run_ai({}, call_model=model, mode="auto", web=True)
+        self.assertEqual(json.loads(self.approvals.read_text(encoding="utf-8")), [extension])
+        self.assertNotIn("replay_mode", [entry["action"] for entry in self._entries()])
+
+    def test_update_recording_uses_only_update_file_after_new_cancellation(self):
+        common.write_json(str(self.data / "scenario.json"), {"notice": "update"})
+        extension = {"id": "P001", "type": "extension", "guest_id": "G002", "guest_name": "Kim Minji",
+                     "language": "Korean", "nights": 1, "status": "sent", "invoice_id": "INV-1"}
+        self.approvals.write_text(json.dumps([extension]), encoding="utf-8")
+        self._recording()
+        original_replay = self.replay.read_bytes()
+        update_replay = self.data / "replay" / "gemini_update_run.json"
+        responses = [answer(call("propose_invoice_cancellation", proposal_id="P001", reason="Restored.",
+                                 message_draft="연박이 필요하지 않습니다.")), answer({"text": "Done."})]
+
+        def model(_env, _contents):
+            return responses.pop(0)
+
+        self.assertEqual(agent.run_ai({}, call_model=model, record=True, recording_path=str(update_replay),
+                                      recording_required_type="invoice_cancellation"), "live")
+        self.assertTrue(update_replay.exists())
+        self.assertEqual(self.replay.read_bytes(), original_replay)
+        self.assertEqual(len(json.loads(self.approvals.read_text(encoding="utf-8"))), 2)
+
+    def test_update_with_existing_cancellation_does_not_roll_back(self):
+        common.write_json(str(self.data / "scenario.json"), {"notice": "update"})
+        existing = {"id": "P001", "type": "invoice_cancellation", "status": "pending"}
+        self.approvals.write_text(json.dumps([existing]), encoding="utf-8")
+        with mock.patch.object(agent, "call_gemini", side_effect=TimeoutError("private failure")):
+            with self.assertRaises(TimeoutError):
+                agent.run_ai({}, mode="auto", web=True)
+        self.assertEqual(json.loads(self.approvals.read_text(encoding="utf-8")), [existing])
+        self.assertFalse(self.log.exists())
 
     def test_auto_replays_after_timeout_or_malformed_response_before_writes(self):
         for error in (TimeoutError("private timeout detail"), KeyError("private response detail")):

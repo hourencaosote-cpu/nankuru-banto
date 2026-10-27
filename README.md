@@ -29,6 +29,7 @@ The builder has worked at hotels in Okinawa and Hokkaido, and has been on shift 
 3. **Code-enforced safety rules filter every proposal.** The AI cannot change them (see below).
 4. **A manager approves** each proposal with one click on the dashboard.
 5. **PayPal closes the loop.** Approval creates and sends a PayPal invoice. When the guest pays, a PayPal webhook confirms the extension within seconds, without a manager pressing a button.
+6. **Plans change.** If an official update restores a guest's flight, the agent proposes cancelling the unpaid invoice. When the manager approves, PayPal cancels it and tells the guest.
 
 ```mermaid
 flowchart LR
@@ -56,6 +57,7 @@ The AI can **look things up, propose, and notify staff — nothing else.** It ha
 | **Amounts are calculated by code** and appended to the message in the guest's language | No hallucinated prices |
 | **Direct bookings only** — OTA bookings go to staff | The inn cannot invoice a guest who paid an online travel agency |
 | **Extension-room inventory** cannot be exceeded | No overbooking |
+| Cancellations only for unpaid invoices, after an official restore | Paid invoices are never touched by the agent; refunds stay with staff |
 | No duplicate proposals or staff notes | Re-running the AI is safe |
 | **Allowlisted tools only**, max 20 steps | Unknown tools are blocked and logged |
 | **No money moves without a human** | Every approval is a POST from the manager's dashboard |
@@ -68,10 +70,15 @@ All calls use the **PayPal REST API in the Sandbox** ([`paypal_tools.py`](paypal
 - `POST /v1/oauth2/token` — OAuth 2.0 client-credentials login
 - `POST /v2/invoicing/invoices` — create the invoice (nights × nightly rate, inn's typhoon discount, guest message as the invoice note)
 - `POST /v2/invoicing/invoices/{id}/send` — send it to the guest
+- `POST /v2/invoicing/invoices/{id}/cancel` — cancel a sent, unpaid invoice after manager approval and notify the guest
+- `DELETE /v2/invoicing/invoices/{id}` — delete an unsent invoice draft after manager approval
 - `POST /v2/invoicing/invoices/{id}/payments` — **Sandbox demo only:** a manager-pressed button that records an external payment, for judges who don't want to log in as the guest. The guest-pays-in-PayPal path is the primary flow.
 - `GET /v2/invoicing/invoices/{id}` — check status; `PAID` confirms the extension
 - `POST /v1/notifications/verify-webhook-signature` — verify that a payment notification came from PayPal
 - `INVOICING.INVOICE.PAID` webhook — after verification, fetch the invoice with `GET /v2/invoicing/invoices/{id}` and confirm the extension only when PayPal reports it paid
+- `INVOICING.INVOICE.CANCELLED` webhook — after verification, fetch the invoice and reflect PayPal's confirmed cancellation
+
+PayPal's current cancellation API accepts `subject` and `note` but says it uses system-defined email text instead of those values. The manager sees the drafted guest message, while PayPal sends its standard cancellation notice. A localized explanation would need a separate staff communication step.
 
 Paying the invoice **is** the guest's confirmation: no forms, no front-desk queue.
 
@@ -116,9 +123,13 @@ In `env.txt`:
 4. Pay as the guest in the Sandbox Personal account, **or** click **Record sandbox payment**
 5. The extension is confirmed automatically after the PayPal webhook; **Check payments now** is available if the notification was missed
 
+To show a restored flight, **Approve & send PayPal invoice** for Kim Minji, then click **Simulate 23:30 airline update (demo)** → **Run AI check** → **Approve & cancel PayPal invoice**. PayPal is checked again immediately before cancellation; an already paid invoice stays paid.
+
 A terminal-only version is also available: `python3 agent.py --reset`, `python3 approve.py`, `python3 check_payments.py`.
 
 `AI_MODE` defaults to `auto` (try Gemini, then a recorded demo if available); set it to `live` or `replay` to choose one source. After a successful live run, `python3 agent.py --reset --record` saves Gemini responses in `data/replay/gemini_run.json` for demo replay.
+
+The updated notice uses a separate optional replay file, `data/replay/gemini_update_run.json`. A local operator can create it with `python3 record_demo.py`; this helper resets the CLI demo state and sends a real Sandbox invoice, so run it only when ready to record the two scenarios.
 
 ### Tests
 
@@ -132,7 +143,7 @@ Gemini and PayPal are mocked; tests make no network calls.
 
 Create a Render Blueprint from this repository using `render.yaml`. Set the environment variables `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `BUYER_EMAIL`, `GEMINI_API_KEY`, `GEMINI_MODEL`, and `SECRET_KEY` in Render's dashboard. Optionally set `INVOICE_BUSINESS_NAME` for the invoice sender; otherwise it is `Nankuru Demo Inn`. Use PayPal Sandbox credentials. The health check endpoint is `/healthz`.
 
-In the PayPal Sandbox app settings, create a webhook with URL `https://<your-app>/webhooks/paypal` and subscribe to **Invoice paid** (`INVOICING.INVOICE.PAID`). Copy the displayed Webhook ID into Render's `PAYPAL_WEBHOOK_ID` environment variable. The dashboard checks for payment updates automatically; **Check payments now** remains available if a notification was missed.
+In the PayPal Sandbox app settings, create a webhook with URL `https://<your-app>/webhooks/paypal` and subscribe to **Invoice paid** (`INVOICING.INVOICE.PAID`) and **Invoice cancelled** (`INVOICING.INVOICE.CANCELLED`). Copy the displayed Webhook ID into Render's `PAYPAL_WEBHOOK_ID` environment variable. The dashboard checks for payment updates automatically; **Check payments now** remains available if a notification was missed.
 
 ## Project structure
 
@@ -169,7 +180,7 @@ tests/              Offline tests
 - Ask guests for their departure flight when the inn doesn't know it (drafted in the guest's language, sent by staff)
 - OTA guests: a drafted message explaining how to extend through their travel site
 - Heavy-snow mode (Hokkaido airports)
-- Cancellation and refund flow
+- Refunds for already-paid extensions
 - Live official flight-status feeds
 
 ## License

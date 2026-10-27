@@ -16,13 +16,15 @@ from flask import Flask, abort, flash, g, redirect, render_template, request, se
 from werkzeug.exceptions import RequestEntityTooLarge
 
 import agent
-from approve import approve_extension, defer_item, reject_extension, resolve_staff_note
+from approve import (approve_cancellation, approve_extension, defer_item, reject_cancellation,
+                     reject_extension, resolve_staff_note)
 from check_payments import check_payments as check_payments_action, confirm_invoice_if_paid
 from common import (
-    DATA_DIR, approvals_path, load_env, log_decision, log_path, read_json,
+    DATA_DIR, approvals_path, flights_path, load_env, log_decision, log_path, notice_scenario,
+    read_json, scenario_path,
     reset_workspace_paths, set_workspace_paths, write_json,
 )
-from paypal_tools import record_invoice_payment, verify_webhook_signature
+from paypal_tools import get_invoice_status, record_invoice_payment, verify_webhook_signature
 
 
 app = Flask(__name__)
@@ -57,6 +59,9 @@ STATUS_LABELS = {
     "approved": "Invoice draft",
     "sent": "Invoice sent",
     "confirmed": "Paid · extension confirmed",
+    "cancelled": "Invoice cancelled · stay not needed",
+    "done": "Cancelled in PayPal",
+    "superseded": "Already paid — not cancelled",
     "rejected": "Proposal rejected",
     "acknowledged": "Handled by staff",
     "dismissed": "Closed",
@@ -64,6 +69,14 @@ STATUS_LABELS = {
 
 ACTION_LABELS = {
     "proposed_extension": "Stay extension proposed",
+    "proposed_cancellation": "Invoice cancellation proposed",
+    "rejected_cancellation": "Safety gate blocked a cancellation",
+    "manager_rejected_cancellation": "Manager rejected a cancellation",
+    "approved_cancellation": "Manager approved — PayPal invoice cancelled",
+    "cancellation_skipped_paid": "Not cancelled: the invoice was already paid",
+    "cancellation_failed": "Cancellation failed safely",
+    "invoice_cancel_confirmed": "PayPal confirmed the cancellation",
+    "official_notice_updated": "Official notice updated (23:30)",
     "rejected_proposal": "Safety gate blocked a proposal",
     "draft_rewrite_requested": "Draft rewrite requested",
     "duplicate_staff_note": "Duplicate staff follow-up blocked",
@@ -101,6 +114,7 @@ GATE_RULES = [
     "Extension-room inventory cannot be exceeded",
     "No duplicate proposal for the same guest",
     "Guest message draft is required",
+    "Cancellations only for unpaid invoices whose departure is officially restored",
 ]
 
 
@@ -433,6 +447,13 @@ def _gate_reason(reason):
         ("必要なのは", "The request exceeds the nights needed for the next available flight."),
         ("案内文の下書き", "A guest message draft is required."),
         ("すでに承認待ち", "A proposal already exists for this guest."),
+        ("延泊提案IDは存在しません", "The original stay-extension proposal does not exist."),
+        ("すでに支払われています", "The invoice has already been paid. Staff must decide on any refund."),
+        ("請求書下書きか送付済み", "Only an invoice draft or an unpaid sent invoice can be cancelled."),
+        ("まだ欠航", "The official notice still shows a cancelled flight."),
+        ("便の再開が確認できません", "The official notice does not confirm the flight has resumed."),
+        ("承認待ちの取り消し", "A cancellation proposal is already awaiting review."),
+        ("漢字が含まれています", "The Korean guest message needs a Hangul-only rewrite."),
     )
     for marker, translation in translations:
         if marker in reason:
@@ -462,6 +483,7 @@ def _tracker_data(guest_rows, approvals):
         "approved": ("Pending approval", "approved"),
         "sent": ("Invoice sent", "sent"),
         "confirmed": ("Paid · confirmed", "confirmed"),
+        "cancelled": ("Invoice cancelled", "cancelled"),
         "rejected": ("Rejected", "rejected"),
         "staff": ("Staff follow-up", "approved"),
         "warning": ("Awaiting AI review", "pending"),
@@ -484,7 +506,7 @@ def _tracker_data(guest_rows, approvals):
             "booking": "OTA" if guest.get("booking_channel") == "ota" else "Direct",
             "flight": f"{flight_number} · {flight_status.replace('_', ' ').capitalize()}",
             "proposalNights": extension.get("nights") if extension else None,
-            "amountUsd": float(extension.get("amount_usd") or 0) if extension else 0.0,
+            "amountUsd": float(extension.get("amount_usd") or 0) if extension and extension.get("status") != "cancelled" else 0.0,
             "status": status,
             "statusStyle": status_style,
             "invoice": invoice_id[-6:] if invoice_id else "—",
@@ -520,6 +542,8 @@ def _activity_views(entries, flights, guest_count, guest_names):
         if action == "gemini_model_used":
             detail = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
             latest_model = detail.get("model")
+            continue
+        if action == "webhook_received":
             continue
         view = _log_view(entry, flights, guest_count, guest_names)
         if action == "finished":
@@ -559,7 +583,7 @@ def _log_view(entry, flights, guest_count, guest_names):
         }
 
     guest_id = detail.get("guest_id")
-    if entry.get("action") == "rejected_proposal":
+    if entry.get("action") in {"rejected_proposal", "rejected_cancellation"}:
         subject = guest_names.get(guest_id) or guest_id or "System"
     else:
         subject = guest_names.get(guest_id) or detail.get("guest_name") or detail.get("id") or guest_id or "System"
@@ -587,7 +611,7 @@ def _approval_state(approvals):
 
 def build_dashboard():
     guest_data = read_json(os.path.join(DATA_DIR, "guests.json"), {})
-    flight_data = read_json(os.path.join(DATA_DIR, "flights.json"), {})
+    flight_data = read_json(flights_path(), {})
     approvals = read_json(approvals_path(), [])
     log_entries = _read_log_entries()
     last_ai_source = next(
@@ -646,7 +670,7 @@ def build_dashboard():
     gate_events = []
     seen_guests = set()
     for entry in reversed(log_entries[-80:]):
-        if entry.get("action") != "rejected_proposal":
+        if entry.get("action") not in {"rejected_proposal", "rejected_cancellation"}:
             continue
         detail = entry.get("detail", {})
         guest_id = detail.get("guest_id", "Unknown guest")
@@ -672,6 +696,10 @@ def build_dashboard():
         [item for item in approvals if item.get("type") == "staff_note"],
         key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
     )
+    cancellations = sorted(
+        [item for item in approvals if item.get("type") == "invoice_cancellation"],
+        key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
+    )
 
     return {
         "hotel": guest_data.get("hotel", "Nankuru Demo Inn"),
@@ -691,6 +719,8 @@ def build_dashboard():
         "guests": guest_rows,
         "proposals": proposals,
         "staff_notes": staff_notes,
+        "cancellations": cancellations,
+        "notice_updated": notice_scenario() == "update",
         "gate_events": gate_events,
         "gate_rules": GATE_RULES,
         "social_posts": flight_data.get("unverified_social_posts", []),
@@ -706,6 +736,7 @@ def archive_demo_state():
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     approvals_file = approvals_path()
     log_file = log_path()
+    scenario_file = scenario_path()
     archive_dir = os.path.join(os.path.dirname(approvals_file), "archive", timestamp)
     os.makedirs(archive_dir, exist_ok=False)
 
@@ -716,10 +747,12 @@ def archive_demo_state():
         open(log_file, "w", encoding="utf-8").close()
 
     log_decision("human", "reset_demo", {"archive": f"archive/{timestamp}"})
-    for source in (approvals_file, log_file):
-        shutil.move(source, os.path.join(archive_dir, os.path.basename(source)))
+    for source in (approvals_file, log_file, scenario_file):
+        if os.path.exists(source):
+            shutil.move(source, os.path.join(archive_dir, os.path.basename(source)))
 
     write_json(approvals_file, [])
+    write_json(scenario_file, {"notice": "initial"})
     open(log_file, "w", encoding="utf-8").close()
     return timestamp
 
@@ -770,6 +803,17 @@ def api_state():
         reset_workspace_paths(tokens)
 
 
+def _webhook_invoice_id(event):
+    resource = event.get("resource")
+    if not isinstance(resource, dict):
+        return None
+    invoice = resource.get("invoice")
+    invoice_id = invoice.get("id") if isinstance(invoice, dict) else None
+    if not isinstance(invoice_id, str) or not invoice_id:
+        invoice_id = resource.get("id")
+    return invoice_id if isinstance(invoice_id, str) and invoice_id else None
+
+
 @app.post("/webhooks/paypal")
 def paypal_webhook():
     """Use a verified PayPal notice to trigger a fresh invoice-status lookup."""
@@ -784,15 +828,12 @@ def paypal_webhook():
             return {"status": "invalid"}, 400
         if not verify_webhook_signature(env, request.headers, event):
             return {"status": "invalid"}, 400
-        if event.get("event_type") != "INVOICING.INVOICE.PAID":
+        event_type = event.get("event_type")
+        if event_type not in {"INVOICING.INVOICE.PAID", "INVOICING.INVOICE.CANCELLED"}:
             return {"status": "ignored"}, 200
 
-        resource = event.get("resource")
-        invoice = resource.get("invoice") if isinstance(resource, dict) else None
-        invoice_id = invoice.get("id") if isinstance(invoice, dict) else None
-        if not isinstance(invoice_id, str) or not invoice_id:
-            invoice_id = resource.get("id") if isinstance(resource, dict) else None
-        if not isinstance(invoice_id, str) or not invoice_id:
+        invoice_id = _webhook_invoice_id(event)
+        if invoice_id is None:
             return {"status": "ignored"}, 200
         workspace_id = _workspace_for_invoice(invoice_id)
         if workspace_id is None:
@@ -817,6 +858,23 @@ def paypal_webhook():
                     )
                     if item is None:
                         return {"status": "ignored"}, 200
+                    if event_type == "INVOICING.INVOICE.CANCELLED":
+                        if item.get("status") not in {"sent", "approved", "cancelled"}:
+                            return {"status": "ignored"}, 200
+                        if get_invoice_status(env, invoice_id) != "CANCELLED":
+                            return {"status": "not cancelled yet"}, 503
+                        if item.get("status") == "cancelled":
+                            return {"status": "ok"}, 200
+                        queue = read_json(approvals_path(), [])
+                        current = next(entry for entry in queue if entry.get("type") == "extension"
+                                       and entry.get("invoice_id") == invoice_id)
+                        current["status"] = "cancelled"
+                        write_json(approvals_path(), queue)
+                        log_decision("paypal", "invoice_cancel_confirmed", {
+                            "id": current.get("id"), "guest_id": current.get("guest_id"),
+                            "invoice_id": invoice_id, "via": "webhook",
+                        })
+                        return {"status": "ok"}, 200
                     if item.get("status") == "confirmed":
                         log_decision("paypal", "webhook_received", {
                             "invoice_id": invoice_id, "result": "already_confirmed",
@@ -927,6 +985,16 @@ def reset_demo():
     return redirect(url_for("dashboard"))
 
 
+@app.post("/demo/airline-update")
+@workspace_action("official_notice_updated")
+def airline_update():
+    if notice_scenario() != "update":
+        write_json(scenario_path(), {"notice": "update"})
+        log_decision("system", "official_notice_updated", {"as_of": "2026-08-06 23:30"})
+    flash("Official demo notice updated to Aug 6 · 23:30.", "success")
+    return redirect(url_for("dashboard"))
+
+
 @app.post("/proposals/<item_id>/approve")
 @workspace_action("approve_proposal")
 def approve_proposal(item_id):
@@ -979,6 +1047,36 @@ def reject_proposal(item_id):
         flash(str(error), "error")
     else:
         flash("Proposal rejected. No invoice was created.", "success")
+    return redirect(url_for("dashboard") + "#review-queue")
+
+
+@app.post("/cancellations/<item_id>/approve")
+@workspace_action("approve_cancellation")
+def approve_cancellation_action(item_id):
+    try:
+        result = approve_cancellation(item_id)
+    except ValueError as error:
+        flash(str(error), "error")
+    except (RuntimeError, SystemExit, OSError) as error:
+        _record_web_failure("approve_cancellation", error)
+        flash("PayPal could not cancel the invoice. The saved statuses were not changed.", "error")
+    else:
+        if result["status"] == "superseded":
+            flash("The invoice was already paid. It was not cancelled; staff must decide any refund.", "info")
+        else:
+            flash("Approved. The PayPal sandbox invoice was cancelled or its draft deleted.", "success")
+    return redirect(url_for("dashboard") + "#review-queue")
+
+
+@app.post("/cancellations/<item_id>/reject")
+@workspace_action("reject_cancellation")
+def reject_cancellation_action(item_id):
+    try:
+        reject_cancellation(item_id)
+    except ValueError as error:
+        flash(str(error), "error")
+    else:
+        flash("Cancellation proposal rejected. The invoice was left unchanged.", "success")
     return redirect(url_for("dashboard") + "#review-queue")
 
 

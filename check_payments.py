@@ -10,12 +10,13 @@ from paypal_tools import _get_token, get_invoice_status
 PAID = ("PAID", "MARKED_AS_PAID")
 
 
-def confirm_invoice_if_paid(invoice_id, env, token=None, source="check_payments"):
+def confirm_invoice_if_paid(invoice_id, env, token=None, source="check_payments", allow_draft=False):
     """Confirm one sent extension only after checking its current PayPal status."""
     queue = read_json(approvals_path(), [])
     item = next(
         (entry for entry in queue if entry.get("type") == "extension"
-         and entry.get("invoice_id") == invoice_id and entry.get("status") == "sent"),
+         and entry.get("invoice_id") == invoice_id
+         and entry.get("status") in ({"sent", "approved"} if allow_draft else {"sent"})),
         None,
     )
     if item is None:
@@ -27,7 +28,7 @@ def confirm_invoice_if_paid(invoice_id, env, token=None, source="check_payments"
         write_json(approvals_path(), queue)
         log_decision(
             "paypal", "payment_confirmed",
-            {"id": item["id"], "invoice_id": invoice_id,
+            {"id": item["id"], "guest_id": item.get("guest_id"), "invoice_id": invoice_id,
              "amount_usd": item["amount_usd"], "via": source},
         )
     elif source == "check_payments":

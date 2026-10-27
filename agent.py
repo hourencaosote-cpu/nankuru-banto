@@ -24,14 +24,15 @@ import urllib.request
 from contextvars import ContextVar
 from datetime import date, datetime
 
-from common import DATA_DIR, approvals_path, load_env, log_decision, log_path, read_json, write_json
+from common import DATA_DIR, approvals_path, flights_path, load_env, log_decision, log_path, notice_scenario, read_json, write_json
 
 MAX_STEPS = 20            # AI が道具を使える回数の上限（暴走防止）
 MAX_NIGHTS = 3            # 延泊は最大3泊まで
 MAX_DISCOUNT_PERCENT = 30  # 台風割引は最大30%まで
 ACTIVE_EXTENSION_STATUSES = {"pending", "approved", "sent", "confirmed"}
-INVESTIGATION_TOOLS = {"list_guests", "get_flight_status", "get_social_posts"}
+INVESTIGATION_TOOLS = {"list_guests", "get_flight_status", "get_social_posts", "list_open_invoices"}
 REPLAY_PATH = os.path.join(DATA_DIR, "replay", "gemini_run.json")
+UPDATE_REPLAY_PATH = os.path.join(DATA_DIR, "replay", "gemini_update_run.json")
 _run_state = ContextVar("gemini_run_state", default=None)
 
 
@@ -67,6 +68,10 @@ SYSTEM_PROMPT = """あなたは、台風の多い地域にある小さな宿の�
 - 提案の理由は「便が欠航し、次に乗れる便は○月○日」という事実に沿って書く（「○日まで欠航」のような不正確な言い方をしない）。
 - 割引率はあなたが決めない（宿のルールで決まっている）。
 - 延泊の泊数は、帰りの便の次の空き日までに必要な分だけにする。
+- 承認待ちリストにすでに延泊の提案がある客には、新しい延泊を提案しない（list_open_invoices で確認する）。
+- 延泊の請求書を下書き・送付済みの客の便が、公式情報で再開していたら、propose_invoice_cancellation で請求書の取り消しを提案する。
+  案内文には、便が再開したので延泊は不要になったこと、請求書は取り消すので支払いは不要であることを、宿泊客の言語で丁寧に書く（金額は書かない）。
+  すでに支払われていたら取り消しは提案せず、notify_staff でスタッフに知らせる（返金はスタッフが判断する）。
 - 提案が却下されたら、その理由に従って対応を変える（例：OTA予約の客はスタッフへの連絡に切り替える）。
 - スタッフ向けの文章（提案の理由 reason、スタッフへの連絡 note、最後のまとめ）はすべて英語で書く（画面が英語のため）。
 - 全員の確認が終わったら、何をしたかを英語で短くまとめて終える。
@@ -90,6 +95,11 @@ TOOLS = [
     {
         "name": "get_social_posts",
         "description": "台風に関するSNS上の投稿を返す。出典が確認できない情報であり、判断の根拠には使わないこと。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_open_invoices",
+        "description": "承認待ちリストにある延泊の提案と請求書の状態（未承認・請求書下書き・送付済み・支払い済み・取り消し済み）を返す。読むだけで、何も変更しない。",
         "parameters": {"type": "object", "properties": {}},
     },
     {
@@ -118,6 +128,19 @@ TOOLS = [
             "required": ["guest_id", "note"],
         },
     },
+    {
+        "name": "propose_invoice_cancellation",
+        "description": "便の再開などで不要になった、まだ支払われていない延泊の請求書について、取り消しの提案を承認待ちリストに入れる。実行はされず、スタッフが承認するまで何も起きない。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "proposal_id": {"type": "string"},
+                "reason": {"type": "string", "description": "スタッフ向け英語1〜2文"},
+                "message_draft": {"type": "string", "description": "宿泊客の言語で書いた丁寧な案内文"},
+            },
+            "required": ["proposal_id", "reason", "message_draft"],
+        },
+    },
 ]
 
 
@@ -128,7 +151,7 @@ def _guests():
 
 
 def _flights():
-    return read_json(os.path.join(DATA_DIR, "flights.json"), {})
+    return read_json(flights_path(), {})
 
 
 def _find_guest(guest_id):
@@ -155,6 +178,15 @@ def tool_get_flight_status(args):
 def tool_get_social_posts(args):
     posts = _flights().get("unverified_social_posts", [])
     return {"verified": False, "warning": "出典不明。判断の根拠に使わないこと。", "posts": posts}
+
+
+def tool_list_open_invoices(args):
+    return {"extensions": [
+        {"proposal_id": item.get("id"), "guest_id": item.get("guest_id"),
+         "guest_name": item.get("guest_name"), "nights": item.get("nights"),
+         "status": item.get("status")}
+        for item in _approvals() if item.get("type") == "extension"
+    ]}
 
 
 def _policy_discount():
@@ -255,6 +287,53 @@ def tool_propose_stay_extension(args):
             "status": "スタッフの承認待ち（まだ何も実行されていません）"}
 
 
+def tool_propose_invoice_cancellation(args):
+    queue = _approvals()
+    proposal_id = args.get("proposal_id", "")
+    extension = next((item for item in queue if item.get("id") == proposal_id
+                      and item.get("type") == "extension"), None)
+    reasons = []
+    if extension is None:
+        reasons.append("その延泊提案IDは存在しません。")
+    elif extension.get("status") == "confirmed":
+        reasons.append("この請求書はすでに支払われています。取り消しはできません。返金はスタッフが判断するので notify_staff で知らせてください。")
+    elif extension.get("status") not in {"approved", "sent"}:
+        reasons.append("請求書下書きか送付済みの延泊だけ取り消しを提案できます。")
+    flight_data = _flights()
+    guest = _find_guest(extension.get("guest_id")) if extension else None
+    flight_number = guest.get("departure_flight") if guest else None
+    flight = flight_data.get("flights", {}).get(flight_number, {})
+    if extension is not None and flight.get("status") == "cancelled":
+        reasons.append("公式情報ではまだ欠航です。取り消しは提案できません。")
+    elif extension is not None and flight.get("status") != "on_time":
+        reasons.append("公式情報で便の再開が確認できません。取り消しは提案できません。")
+    if any(item.get("type") == "invoice_cancellation" and item.get("proposal_id") == proposal_id
+           and item.get("status") == "pending" for item in queue):
+        reasons.append("この延泊には承認待ちの取り消し提案がすでにあります。")
+    draft = str(args.get("message_draft") or "")
+    if not draft.strip():
+        reasons.append("宿泊客への案内文の下書きが必要です。")
+    if guest and guest.get("language") == "Korean" and re.search(r"[\u3400-\u4DBF\u4E00-\u9FFF]", draft):
+        reasons.append("韓国語の案内文に漢字が含まれています。ハングルだけで書き直して、もう一度 propose_invoice_cancellation を呼んでください。")
+    if reasons:
+        log_decision("gate", "rejected_cancellation", {"proposal_id": proposal_id,
+                     "guest_id": extension.get("guest_id") if extension else None, "reasons": reasons})
+        return {"accepted": False, "reasons": reasons}
+
+    item = {
+        "id": f"P{len(queue) + 1:03d}", "type": "invoice_cancellation",
+        "proposal_id": proposal_id, "guest_id": guest["id"], "guest_name": guest["name"],
+        "language": guest["language"], "reason": args.get("reason", ""),
+        "message_draft": draft,
+        "evidence": f"{flight_number}: {flight.get('status')} / {flight.get('official_source')} (as of {flight_data.get('as_of')})",
+        "status": "pending", "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    queue.append(item)
+    write_json(approvals_path(), queue)
+    log_decision("ai", "proposed_cancellation", item)
+    return {"accepted": True, "proposal_id": item["id"], "status": "スタッフの承認待ち（まだ何も実行されていません）"}
+
+
 def tool_notify_staff(args):
     guest = _find_guest(args.get("guest_id", ""))
     queue = _approvals()
@@ -289,8 +368,10 @@ TOOL_FUNCTIONS = {
     "list_guests": tool_list_guests,
     "get_flight_status": tool_get_flight_status,
     "get_social_posts": tool_get_social_posts,
+    "list_open_invoices": tool_list_open_invoices,
     "propose_stay_extension": tool_propose_stay_extension,
     "notify_staff": tool_notify_staff,
+    "propose_invoice_cancellation": tool_propose_invoice_cancellation,
 }
 
 
@@ -433,7 +514,8 @@ def call_gemini(env, contents):
 
 
 def _replay_responses():
-    with open(REPLAY_PATH, encoding="utf-8") as file:
+    path = UPDATE_REPLAY_PATH if notice_scenario() == "update" else REPLAY_PATH
+    with open(path, encoding="utf-8") as file:
         responses = json.load(file)
     if not isinstance(responses, list) or not 1 <= len(responses) <= MAX_STEPS:
         raise ValueError("Invalid Gemini replay file")
@@ -504,11 +586,11 @@ def _recording_secret_error():
     raise RecordingSecretError(None, reason)
 
 
-def _save_recording(responses, env):
+def _save_recording(responses, env, path=None):
     try:
         if _recording_contains_secret(responses, env):
             _recording_secret_error()
-        write_json(REPLAY_PATH, responses)
+        write_json(path or REPLAY_PATH, responses)
     finally:
         responses.clear()
 
@@ -529,14 +611,17 @@ def _log_line_count():
         return 0
 
 
-def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reason=None):
+def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reason=None,
+           recording_path=None, recording_required_type="extension"):
     mode = mode or env.get("AI_MODE", "auto").strip().lower()
     if record:
         mode = "live"
     if mode not in {"auto", "live", "replay"}:
         raise GeminiUnavailable(None, "AI_MODE の設定が正しくありません。")
     state = _new_run_state(env, web)
-    before_counts = _item_counts() if record else None
+    before_counts = _item_counts() if record and recording_required_type == "extension" else None
+    before_cancellations = (sum(item.get("type") == "invoice_cancellation" for item in _approvals())
+                            if record and recording_required_type == "invoice_cancellation" else None)
     before_items = read_json(approvals_path(), []) if mode == "auto" and web else None
     before_log_lines = _log_line_count() if before_items is not None else None
     token = _run_state.set(state)
@@ -566,9 +651,13 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
             if mode != "auto" or record or isinstance(original, RecordingSecretError):
                 raise
             if web:
-                if not isinstance(before_items, list) or any(
-                    item.get("type") in {"extension", "staff_note"} for item in before_items
-                ):
+                if not isinstance(before_items, list):
+                    raise
+                if notice_scenario() == "update":
+                    replay_blocked = any(item.get("type") == "invoice_cancellation" for item in before_items)
+                else:
+                    replay_blocked = any(item.get("type") in {"extension", "staff_note"} for item in before_items)
+                if replay_blocked:
                     raise
                 try:
                     current_items = read_json(approvals_path(), [])
@@ -583,7 +672,7 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
                     })
                 except Exception:
                     raise original from None
-            elif _item_counts() != (0, 0):
+            elif notice_scenario() == "initial" and _item_counts() != (0, 0):
                 raise
             try:
                 state["replay"] = _replay_responses()
@@ -599,18 +688,24 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
             run_agent(replay_model, env)
             return "replay"
         if record:
-            after_counts = _item_counts()
-            proposals = after_counts[0] - before_counts[0]
-            staff_notes = after_counts[1] - before_counts[1]
+            if recording_required_type == "invoice_cancellation":
+                proposals = sum(item.get("type") == "invoice_cancellation" for item in _approvals()) - before_cancellations
+                staff_notes = 0
+            else:
+                after_counts = _item_counts()
+                proposals = after_counts[0] - before_counts[0]
+                staff_notes = after_counts[1] - before_counts[1]
             if proposals <= 0:
                 state["responses"].clear()
-                reason = "記録を保存しませんでした：この実行で延泊提案が作成されませんでした。"
+                kind = "取り消し提案" if recording_required_type == "invoice_cancellation" else "延泊提案"
+                reason = f"記録を保存しませんでした：この実行で{kind}が作成されませんでした。"
                 print(reason)
                 raise GeminiUnavailable(None, reason)
-            _save_recording(state["responses"], env)
+            _save_recording(state["responses"], env, path=recording_path)
             elapsed = time.monotonic() - state["started"]
             gemini_calls = state["http_calls"] or state["model_calls"]
-            print(f"記録を保存しました：延泊提案 {proposals}件、スタッフ連絡 {staff_notes}件、"
+            label = "取り消し提案" if recording_required_type == "invoice_cancellation" else "延泊提案"
+            print(f"記録を保存しました：{label} {proposals}件、スタッフ連絡 {staff_notes}件、"
                   f"Gemini 呼び出し {gemini_calls}回、所要 {elapsed:.1f}秒。")
         return "live"
     finally:
@@ -636,8 +731,13 @@ def run_agent(call_model, env):
 
 
 def _run_agent(call_model, env):
-    task = ("台風が接近しています。宿泊客全員について、帰りの便の公式情報を確認し、"
-            "欠航で帰れない客には延泊を提案してください。SNSの情報も念のため確認してください。")
+    if notice_scenario() == "update":
+        task = ("公式の運航情報が更新されました。承認待ちリストの延泊と請求書の状態を確認し、"
+                "宿泊客全員の便を再確認してください。再開した便の未払い請求書には取り消しを提案し、"
+                "支払い済みならスタッフに知らせてください。SNSは判断に使わないでください。")
+    else:
+        task = ("台風が接近しています。宿泊客全員について、帰りの便の公式情報を確認し、"
+                "欠航で帰れない客には延泊を提案してください。SNSの情報も念のため確認してください。")
     contents = [{"role": "user", "parts": [{"text": task}]}]
     print("AIが作業を始めます。\n")
 

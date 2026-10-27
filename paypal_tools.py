@@ -105,6 +105,29 @@ def get_invoice_status(env, invoice_id, token=None):
     return res.get("status", "")
 
 
+def cancel_invoice(env, invoice_id, note):
+    """Cancel a sent sandbox invoice and let PayPal notify both parties."""
+    token = _get_token(env)
+    path = f"/v2/invoicing/invoices/{urllib.parse.quote(str(invoice_id), safe='')}/cancel"
+    status, _ = _call("POST", path, token=token, body={
+        "subject": "Your stay extension invoice was cancelled",
+        "note": note,
+        "send_to_recipient": True,
+        "send_to_invoicer": True,
+    })
+    if status != 204:
+        raise RuntimeError("PayPal could not cancel the invoice.")
+
+
+def delete_invoice_draft(env, invoice_id):
+    """Delete an invoice draft that has never been sent."""
+    token = _get_token(env)
+    path = f"/v2/invoicing/invoices/{urllib.parse.quote(str(invoice_id), safe='')}"
+    status, _ = _call("DELETE", path, token=token)
+    if status != 204:
+        raise RuntimeError("PayPal could not delete the invoice draft.")
+
+
 def verify_webhook_signature(env, headers, event):
     """Ask PayPal Sandbox to verify a received webhook before using it."""
     header_fields = {

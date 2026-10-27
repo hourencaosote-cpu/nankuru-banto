@@ -37,6 +37,21 @@ def log_path():
     return _log_override.get() or os.path.join(LOG_DIR, "decision_log.jsonl")
 
 
+def scenario_path():
+    return os.path.join(os.path.dirname(approvals_path()), "scenario.json")
+
+
+def notice_scenario():
+    if _approvals_override.get() is None:
+        return "update" if os.environ.get("NANKURU_NOTICE") == "update" else "initial"
+    return "update" if read_json(scenario_path(), {}).get("notice") == "update" else "initial"
+
+
+def flights_path():
+    name = "flights_update.json" if notice_scenario() == "update" else "flights.json"
+    return os.path.join(DATA_DIR, name)
+
+
 def set_workspace_paths(workspace_dir):
     """Bind one visitor's files to the current request; return reset tokens."""
     return (

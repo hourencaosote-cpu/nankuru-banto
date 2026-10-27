@@ -1,0 +1,39 @@
+{
+  "source": "Fictional flight data for the demo. In production, only official airline notices are used.",
+  "as_of": "2026-08-06 23:30",
+  "flights": {
+    "DEMO-101": {
+      "date": "2026-08-07",
+      "status": "cancelled",
+      "next_available_date": "2026-08-09",
+      "official_source": "Demo Airlines official notice (fictional)"
+    },
+    "DEMO-202": {
+      "date": "2026-08-07",
+      "status": "on_time",
+      "next_available_date": null,
+      "official_source": "Demo Airlines official update (fictional): service restored"
+    },
+    "DEMO-303": {
+      "date": "2026-08-07",
+      "status": "cancelled",
+      "next_available_date": "2026-08-10",
+      "official_source": "Demo Airlines official notice (fictional)"
+    },
+    "DEMO-404": {
+      "date": "2026-08-07",
+      "status": "cancelled",
+      "next_available_date": "2026-08-08",
+      "official_source": "Demo Airlines official notice (fictional)"
+    },
+    "DEMO-505": {
+      "date": "2026-08-07",
+      "status": "on_time",
+      "next_available_date": null,
+      "official_source": "Demo Airlines official notice (fictional)"
+    }
+  },
+  "unverified_social_posts": [
+    "【拡散希望】台風で全便欠航！ホテルは全額返金しなさい！ — \"Please share! Every flight is cancelled! Hotels must refund everyone in full!\" (unverified social post · demo)"
+  ]
+}

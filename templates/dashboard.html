@@ -33,6 +33,15 @@
         <div>
           <strong>{{ typhoon_status }}</strong>
           <span>Data as of {{ as_of|short_time }} · Official notices only</span>
+          {% if notice_updated %}
+            <span>Official notice as of Aug 6 · 23:30</span>
+          {% else %}
+            <form method="post" action="{{ url_for('airline_update') }}" class="notice-update-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="notice-update-button" type="submit">Simulate 23:30 airline update (demo)</button>
+            </form>
+            <small>Demo only: loads a fictional updated notice where DEMO-202 is restored.</small>
+          {% endif %}
         </div>
       </div>
 
@@ -114,7 +123,7 @@
                 <div class="guest-title"><strong>{{ guest.name }}</strong><span>Room {{ guest.room }}</span></div>
                 <div class="flight-line">
                   <span>{{ guest.departure_flight }}</span>
-                  <span class="flight-status flight-{{ guest.flight_status }}">{{ guest.flight_status|replace('_', ' ')|title }}</span>
+                  <span class="flight-status flight-{{ guest.flight_status }}">{{ guest.flight_status|replace('_', ' ')|capitalize }}</span>
                 </div>
                 <p class="response-label response-{{ guest.response_style }}">{{ guest.response }}</p>
               </div>
@@ -129,7 +138,7 @@
           <p>AI prepares. Safety rules filter. You decide.</p>
         </div>
 
-        {% if not proposals and not staff_notes %}
+        {% if not proposals and not staff_notes and not cancellations %}
           <div class="empty-state">
             <div class="empty-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M7 12.5 10.2 16 17 8.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -222,6 +231,44 @@
               {% if proposal.pay_url %}
                 <a class="text-link" href="{{ proposal.pay_url }}" target="_blank" rel="noopener noreferrer">View guest invoice in PayPal</a>
               {% endif %}
+            {% endif %}
+          </article>
+        {% endfor %}
+
+        {% for cancellation in cancellations %}
+          <article class="proposal-card cancellation-card status-border-{{ cancellation.status }}">
+            <header class="card-header">
+              <div>
+                <div class="card-kicker"><span>{{ cancellation.id }}</span><span>{{ cancellation.language }}</span></div>
+                <h3>CANCEL INVOICE · {{ cancellation.guest_name }}</h3>
+              </div>
+              <span class="status-badge status-{{ cancellation.status }}">{{ status_labels.get(cancellation.status, cancellation.status|title) }}</span>
+            </header>
+            <dl class="decision-details">
+              <div><dt>Official evidence</dt><dd>{{ cancellation.evidence }}</dd></div>
+              <div><dt>AI rationale</dt><dd>{{ cancellation.reason }}</dd></div>
+            </dl>
+            <div class="message-preview">
+              <div class="message-heading"><span>Guest cancellation message draft</span><span>{{ cancellation.language }}</span></div>
+              <p>{{ cancellation.message_draft }}</p>
+            </div>
+            <p class="cancellation-mail-note">PayPal sends its standard cancellation email; it may not include this draft.</p>
+            {% if cancellation.status == 'pending' %}
+              <p class="cancellation-warning">Nothing is cancelled until you approve.</p>
+              <div class="card-actions">
+                <form method="post" action="{{ url_for('approve_cancellation_action', item_id=cancellation.id) }}" class="js-loading-form" data-loading-message="Checking and cancelling the PayPal sandbox invoice…">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-primary" type="submit">Approve &amp; cancel PayPal invoice</button>
+                </form>
+                <form method="post" action="{{ url_for('reject_cancellation_action', item_id=cancellation.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-danger-ghost" type="submit">Reject</button>
+                </form>
+                <form method="post" action="{{ url_for('review_later', item_id=cancellation.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-quiet" type="submit">Later</button>
+                </form>
+              </div>
             {% endif %}
           </article>
         {% endfor %}

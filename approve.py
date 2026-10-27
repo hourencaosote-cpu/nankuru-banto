@@ -9,7 +9,9 @@
 """
 
 from common import approvals_path, load_env, log_decision, read_json, write_json
-from paypal_tools import create_extension_invoice, send_invoice
+from check_payments import PAID, confirm_invoice_if_paid
+from paypal_tools import (cancel_invoice, create_extension_invoice, delete_invoice_draft,
+                          get_invoice_status, send_invoice)
 
 
 def ask(prompt):
@@ -107,6 +109,72 @@ def reject_extension(item_id):
     return item
 
 
+def approve_cancellation(item_id, env=None):
+    """A manager cancels only an unpaid invoice after a fresh PayPal lookup."""
+    queue = read_json(approvals_path(), [])
+    cancellation = _find_item(queue, item_id)
+    if cancellation.get("type") != "invoice_cancellation" or cancellation.get("status") != "pending":
+        raise ValueError("This cancellation is no longer waiting for approval.")
+    extension = _find_item(queue, cancellation.get("proposal_id"))
+    if extension.get("type") != "extension" or extension.get("status") not in {"approved", "sent"}:
+        raise ValueError("The original extension is no longer eligible for cancellation.")
+    invoice_id = extension.get("invoice_id")
+    if not invoice_id:
+        raise ValueError("The original extension has no saved PayPal invoice.")
+
+    env = env or load_env()
+    try:
+        status = get_invoice_status(env, invoice_id)
+        if status in PAID:
+            outcome = confirm_invoice_if_paid(invoice_id, env, source="cancellation", allow_draft=True)
+            if outcome is None or not outcome["confirmed"]:
+                raise RuntimeError("PayPal payment status changed during confirmation.")
+            # The confirmation function writes the extension; reload before saving the proposal.
+            queue = read_json(approvals_path(), [])
+            cancellation = _find_item(queue, item_id)
+            cancellation["status"] = "superseded"
+            write_json(approvals_path(), queue)
+            log_decision("human", "cancellation_skipped_paid", {
+                "id": item_id, "proposal_id": extension["id"], "guest_id": extension.get("guest_id"),
+            })
+            return {"status": "superseded", "item": cancellation}
+        if extension["status"] == "sent":
+            if status not in {"SENT", "UNPAID"}:
+                raise RuntimeError("PayPal invoice is not in a cancellable sent state.")
+            cancel_invoice(env, invoice_id, cancellation["message_draft"])
+        else:
+            if status != "DRAFT":
+                raise RuntimeError("PayPal invoice is not a draft.")
+            delete_invoice_draft(env, invoice_id)
+    except (Exception, SystemExit) as error:
+        log_decision("human", "cancellation_failed", {
+            "id": item_id, "proposal_id": extension["id"],
+            "guest_id": extension.get("guest_id"), "error_type": type(error).__name__,
+        })
+        raise
+
+    extension["status"] = "cancelled"
+    cancellation["status"] = "done"
+    write_json(approvals_path(), queue)
+    log_decision("human", "approved_cancellation", {
+        "id": item_id, "proposal_id": extension["id"], "guest_id": extension.get("guest_id"),
+    })
+    return {"status": "done", "item": cancellation}
+
+
+def reject_cancellation(item_id):
+    queue = read_json(approvals_path(), [])
+    item = _find_item(queue, item_id)
+    if item.get("type") != "invoice_cancellation" or item.get("status") != "pending":
+        raise ValueError("This cancellation is no longer waiting for a decision.")
+    item["status"] = "rejected"
+    write_json(approvals_path(), queue)
+    log_decision("human", "manager_rejected_cancellation", {
+        "id": item_id, "proposal_id": item.get("proposal_id"), "guest_id": item.get("guest_id"),
+    })
+    return item
+
+
 def defer_item(item_id):
     queue = read_json(approvals_path(), [])
     item = _find_item(queue, item_id)
@@ -172,6 +240,25 @@ def main():
             elif answer == "n":
                 reject_extension(item["id"])
                 print("  → 却下しました。何も実行していません。")
+            else:
+                defer_item(item["id"])
+                print("  → あとで確認します。")
+        elif item["type"] == "invoice_cancellation":
+            print(f"[{item['id']}] 請求書の取り消し提案　{item['guest_name']} 様")
+            print(f"  根拠　: {item['evidence']}")
+            print(f"  AIの理由: {item['reason']}")
+            print("  客に届く案内文:\n    " + item["message_draft"].replace("\n", "\n    "))
+            answer = ask("\nPayPal の請求書を取り消しますか？ y / n / s : ")
+            if answer == "y":
+                try:
+                    result = approve_cancellation(item["id"], env=env)
+                    print("  → 支払い済みのため取り消していません。" if result["status"] == "superseded"
+                          else "  → PayPal の請求書を取り消しました。")
+                except (RuntimeError, SystemExit) as error:
+                    print(f"  → 取り消しに失敗しました: {type(error).__name__}")
+            elif answer == "n":
+                reject_cancellation(item["id"])
+                print("  → 却下しました。請求書はそのままです。")
             else:
                 defer_item(item["id"])
                 print("  → あとで確認します。")

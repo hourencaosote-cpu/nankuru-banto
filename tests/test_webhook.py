@@ -212,6 +212,37 @@ class PayPalWebhookTests(unittest.TestCase):
              {"invoice_id": self.invoice_id, "result": "already_confirmed"}],
         )
 
+    def test_cancelled_webhook_requires_signature_and_get_and_is_idempotent(self):
+        event = self._event(event_type="INVOICING.INVOICE.CANCELLED")
+        event["resource"]["invoice"]["status"] = "CANCELLED"
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=False), \
+             mock.patch.object(web_app, "get_invoice_status") as get_status:
+            self.assertEqual(self.client.post("/webhooks/paypal", json=event).status_code, 400)
+            get_status.assert_not_called()
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
+             mock.patch.object(web_app, "get_invoice_status", return_value="SENT"):
+            self.assertEqual(self.client.post("/webhooks/paypal", json=event).status_code, 503)
+        self.assertEqual(self._queue()[0]["status"], "sent")
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
+             mock.patch.object(web_app, "get_invoice_status", return_value="CANCELLED") as get_status:
+            self.assertEqual(self.client.post("/webhooks/paypal", json=event).status_code, 200)
+            self.assertEqual(self.client.post("/webhooks/paypal", json=event).status_code, 200)
+        self.assertEqual(get_status.call_count, 2)
+        self.assertEqual(self._queue()[0]["status"], "cancelled")
+        entries = [entry for entry in self._entries(self.workspace_log)
+                   if entry["action"] == "invoice_cancel_confirmed"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["detail"]["guest_id"], "G001")
+        self.assertEqual(entries[0]["detail"]["via"], "webhook")
+
+    def test_cancelled_webhook_accepts_legacy_resource_id(self):
+        event = {"event_type": "INVOICING.INVOICE.CANCELLED",
+                 "resource": {"id": self.invoice_id, "status": "CANCELLED"}}
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
+             mock.patch.object(web_app, "get_invoice_status", return_value="CANCELLED"):
+            self.assertEqual(self.client.post("/webhooks/paypal", json=event).status_code, 200)
+        self.assertEqual(self._queue()[0]["status"], "cancelled")
+
     def test_unknown_invoice_and_other_event_are_ignored(self):
         with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
              mock.patch.object(check_payments, "get_invoice_status") as get_status:
