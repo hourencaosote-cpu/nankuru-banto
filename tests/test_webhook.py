@@ -76,7 +76,9 @@ class PayPalWebhookTests(unittest.TestCase):
     def _event(self, invoice_id=None, event_type="INVOICING.INVOICE.PAID"):
         return {
             "event_type": event_type,
-            "resource": {"id": invoice_id or self.invoice_id, "status": "PAID"},
+            "resource": {
+                "invoice": {"id": invoice_id or self.invoice_id, "status": "PAID"},
+            },
         }
 
     def _entries(self, path):
@@ -128,6 +130,10 @@ class PayPalWebhookTests(unittest.TestCase):
         entries = self._entries(self.workspace_log)
         self.assertEqual([entry["detail"]["via"] for entry in entries
                           if entry["action"] == "payment_confirmed"], ["webhook"])
+        self.assertEqual(
+            [entry["detail"] for entry in entries if entry["action"] == "webhook_received"],
+            [{"invoice_id": self.invoice_id, "result": "confirmed"}],
+        )
         page = self.client.get("/").get_data(as_text=True)
         self.assertIn("Payment confirmed by PayPal webhook", page)
         self.assertIn("Check payments now", page)
@@ -142,14 +148,55 @@ class PayPalWebhookTests(unittest.TestCase):
         self.assertEqual(self.queue_path.read_bytes(), original)
         self.assertEqual(self._entries(self.workspace_log), [])
 
-    def test_paid_event_does_not_override_unpaid_paypal_status(self):
+    def test_legacy_resource_id_still_confirms_invoice(self):
+        event = {"event_type": "INVOICING.INVOICE.PAID",
+                 "resource": {"id": self.invoice_id, "status": "PAID"}}
         with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
-             mock.patch.object(check_payments, "get_invoice_status", return_value="SENT") as get_status:
-            response = self.client.post("/webhooks/paypal", json=self._event())
+             mock.patch.object(check_payments, "get_invoice_status", return_value="PAID") as get_status:
+            response = self.client.post("/webhooks/paypal", json=event)
         self.assertEqual(response.status_code, 200)
         get_status.assert_called_once()
+        self.assertEqual(self._queue()[0]["status"], "confirmed")
+
+    def test_nested_invoice_id_takes_priority_over_resource_id(self):
+        event = self._event()
+        event["resource"]["id"] = "EVENT-RESOURCE-ID"
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
+             mock.patch.object(check_payments, "get_invoice_status", return_value="PAID") as get_status:
+            response = self.client.post("/webhooks/paypal", json=event)
+        self.assertEqual(response.status_code, 200)
+        get_status.assert_called_once()
+        self.assertEqual(self._queue()[0]["status"], "confirmed")
+
+    def test_unpaid_status_after_three_checks_requests_retry(self):
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
+             mock.patch.object(check_payments, "get_invoice_status", return_value="SENT") as get_status, \
+             mock.patch.object(web_app.time, "sleep") as sleep:
+            response = self.client.post("/webhooks/paypal", json=self._event())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(get_status.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(2), mock.call(2)])
         self.assertEqual(self._queue()[0]["status"], "sent")
-        self.assertEqual(self._entries(self.workspace_log), [])
+        self.assertEqual(
+            [entry["detail"] for entry in self._entries(self.workspace_log)
+             if entry["action"] == "webhook_received"],
+            [{"invoice_id": self.invoice_id, "result": "not_paid_yet"}],
+        )
+
+    def test_second_check_can_confirm_after_initial_sent_status(self):
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
+             mock.patch.object(check_payments, "get_invoice_status", side_effect=["SENT", "PAID"]) as get_status, \
+             mock.patch.object(web_app.time, "sleep") as sleep:
+            response = self.client.post("/webhooks/paypal", json=self._event())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(get_status.call_count, 2)
+        sleep.assert_called_once_with(2)
+        self.assertEqual(self._queue()[0]["status"], "confirmed")
+        self.assertEqual(
+            [entry["detail"] for entry in self._entries(self.workspace_log)
+             if entry["action"] == "webhook_received"],
+            [{"invoice_id": self.invoice_id, "result": "confirmed"}],
+        )
 
     def test_duplicate_webhook_confirms_and_logs_once(self):
         with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
@@ -157,7 +204,13 @@ class PayPalWebhookTests(unittest.TestCase):
             self.assertEqual(self.client.post("/webhooks/paypal", json=self._event()).status_code, 200)
             self.assertEqual(self.client.post("/webhooks/paypal", json=self._event()).status_code, 200)
         get_status.assert_called_once()
-        self.assertEqual(len(self._entries(self.workspace_log)), 1)
+        entries = self._entries(self.workspace_log)
+        self.assertEqual(sum(entry["action"] == "payment_confirmed" for entry in entries), 1)
+        self.assertEqual(
+            [entry["detail"] for entry in entries if entry["action"] == "webhook_received"],
+            [{"invoice_id": self.invoice_id, "result": "confirmed"},
+             {"invoice_id": self.invoice_id, "result": "already_confirmed"}],
+        )
 
     def test_unknown_invoice_and_other_event_are_ignored(self):
         with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
@@ -180,7 +233,7 @@ class PayPalWebhookTests(unittest.TestCase):
 
     def test_csrf_exemption_does_not_exempt_other_posts(self):
         with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
-             mock.patch.object(check_payments, "get_invoice_status", return_value="SENT"):
+             mock.patch.object(check_payments, "get_invoice_status", return_value="PAID"):
             self.assertEqual(self.client.post("/webhooks/paypal", json=self._event()).status_code, 200)
         self.assertEqual(self.client.post("/check-payments").status_code, 400)
 

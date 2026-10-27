@@ -788,7 +788,10 @@ def paypal_webhook():
             return {"status": "ignored"}, 200
 
         resource = event.get("resource")
-        invoice_id = resource.get("id") if isinstance(resource, dict) else None
+        invoice = resource.get("invoice") if isinstance(resource, dict) else None
+        invoice_id = invoice.get("id") if isinstance(invoice, dict) else None
+        if not isinstance(invoice_id, str) or not invoice_id:
+            invoice_id = resource.get("id") if isinstance(resource, dict) else None
         if not isinstance(invoice_id, str) or not invoice_id:
             return {"status": "ignored"}, 200
         workspace_id = _workspace_for_invoice(invoice_id)
@@ -807,7 +810,34 @@ def paypal_webhook():
             try:
                 tokens = set_workspace_paths(workspace_dir)
                 try:
-                    confirm_invoice_if_paid(invoice_id, env, source="webhook")
+                    item = next(
+                        (entry for entry in read_json(approvals_path(), [])
+                         if entry.get("type") == "extension" and entry.get("invoice_id") == invoice_id),
+                        None,
+                    )
+                    if item is None:
+                        return {"status": "ignored"}, 200
+                    if item.get("status") == "confirmed":
+                        log_decision("paypal", "webhook_received", {
+                            "invoice_id": invoice_id, "result": "already_confirmed",
+                        })
+                        return {"status": "ok"}, 200
+                    if item.get("status") != "sent":
+                        return {"status": "ignored"}, 200
+
+                    for attempt in range(3):
+                        outcome = confirm_invoice_if_paid(invoice_id, env, source="webhook")
+                        if outcome is not None and outcome["confirmed"]:
+                            log_decision("paypal", "webhook_received", {
+                                "invoice_id": invoice_id, "result": "confirmed",
+                            })
+                            return {"status": "ok"}, 200
+                        if attempt < 2:
+                            time.sleep(2)
+                    log_decision("paypal", "webhook_received", {
+                        "invoice_id": invoice_id, "result": "not_paid_yet",
+                    })
+                    return {"status": "not paid yet"}, 503
                 finally:
                     reset_workspace_paths(tokens)
             finally:
@@ -817,7 +847,6 @@ def paypal_webhook():
                 ACTIVE_REQUESTS[workspace_id] -= 1
                 if not ACTIVE_REQUESTS[workspace_id]:
                     del ACTIVE_REQUESTS[workspace_id]
-        return {"status": "ok"}, 200
     except RequestEntityTooLarge:
         return {"status": "too large"}, 413
     except (SystemExit, Exception) as error:
