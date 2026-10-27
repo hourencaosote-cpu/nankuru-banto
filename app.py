@@ -1,5 +1,6 @@
 """責任者向け Web 画面。状態を変える操作はすべて POST に限定する。"""
 
+import hashlib
 import hmac
 import json
 import os
@@ -12,15 +13,16 @@ from datetime import datetime, timezone
 from functools import wraps
 
 from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
+from werkzeug.exceptions import RequestEntityTooLarge
 
 import agent
 from approve import approve_extension, defer_item, reject_extension, resolve_staff_note
-from check_payments import check_payments as check_payments_action
+from check_payments import check_payments as check_payments_action, confirm_invoice_if_paid
 from common import (
     DATA_DIR, approvals_path, load_env, log_decision, log_path, read_json,
     reset_workspace_paths, set_workspace_paths, write_json,
 )
-from paypal_tools import record_invoice_payment
+from paypal_tools import record_invoice_payment, verify_webhook_signature
 
 
 app = Flask(__name__)
@@ -36,6 +38,7 @@ WORKSPACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 WORKSPACE_LOCKS = {}
 ACTIVE_REQUESTS = {}
 WORKSPACE_STATE_LOCK = threading.Lock()
+INVOICE_INDEX_LOCK = threading.Lock()
 LIMITS_LOCK = threading.Lock()
 AI_SEMAPHORE = threading.BoundedSemaphore(2)
 WORKSPACE_TTL_SECONDS = 24 * 60 * 60
@@ -74,6 +77,7 @@ ACTION_LABELS = {
     "acknowledged": "Staff note handled",
     "dismissed": "Staff note closed",
     "payment_confirmed": "Payment confirmed",
+    "payment_confirmed_webhook": "Payment confirmed by PayPal webhook",
     "payment_pending": "Payment still pending",
     "payment_check_failed": "Payment check failed safely",
     "recorded_sandbox_payment": "Manager recorded sandbox payment",
@@ -107,8 +111,46 @@ class DemoLimitReached(Exception):
         self.scope = scope
 
 
+class InvoiceIndexError(RuntimeError):
+    """A saved invoice could not be mapped to its visitor workspace."""
+
+
 def _workspaces_dir():
     return os.path.join(DATA_DIR, "workspaces")
+
+
+def _invoice_index_path():
+    return os.path.join(_workspaces_dir(), "_invoice_index.json")
+
+
+def _remember_invoice(invoice_id, workspace_id):
+    if not isinstance(invoice_id, str) or not invoice_id:
+        raise InvoiceIndexError("An invoice ID is required for automatic payment updates.")
+    with INVOICE_INDEX_LOCK:
+        index = read_json(_invoice_index_path(), {})
+        previous = index.get(invoice_id)
+        if previous is not None and previous != workspace_id:
+            raise InvoiceIndexError("Invoice ID already belongs to another workspace.")
+        if previous != workspace_id:
+            index[invoice_id] = workspace_id
+            write_json(_invoice_index_path(), index)
+
+
+def _workspace_for_invoice(invoice_id):
+    with INVOICE_INDEX_LOCK:
+        workspace_id = read_json(_invoice_index_path(), {}).get(invoice_id)
+    if isinstance(workspace_id, str) and WORKSPACE_ID_PATTERN.fullmatch(workspace_id):
+        return workspace_id
+    return None
+
+
+def _forget_invoice_workspaces(workspace_ids):
+    with INVOICE_INDEX_LOCK:
+        index = read_json(_invoice_index_path(), {})
+        kept = {invoice_id: workspace_id for invoice_id, workspace_id in index.items()
+                if workspace_id not in workspace_ids}
+        if len(kept) != len(index):
+            write_json(_invoice_index_path(), kept)
 
 
 def _cleanup_workspaces_locked(now=None):
@@ -140,6 +182,7 @@ def _cleanup_workspaces_locked(now=None):
         deleted_ids.add(entry.name)
     if deleted_ids:
         _forget_limit_visitors(deleted_ids)
+        _forget_invoice_workspaces(deleted_ids)
 
 
 def cleanup_workspaces(now=None):
@@ -156,7 +199,10 @@ def _new_workspace_id(root):
 
 @app.before_request
 def bind_workspace():
-    if request.endpoint == "healthz":
+    if request.endpoint == "paypal_webhook":
+        request.max_content_length = 64 * 1024
+        return
+    if request.endpoint in {"healthz", "api_state"}:
         return
     with WORKSPACE_STATE_LOCK:
         root = _workspaces_dir()
@@ -336,7 +382,7 @@ def inject_csrf_token():
 
 @app.before_request
 def protect_post_requests():
-    if request.method != "POST":
+    if request.method != "POST" or request.endpoint == "paypal_webhook":
         return
     expected = session.get("csrf_token", "")
     submitted = request.form.get("csrf_token", "")
@@ -517,15 +563,26 @@ def _log_view(entry, flights, guest_count, guest_names):
         subject = guest_names.get(guest_id) or guest_id or "System"
     else:
         subject = guest_names.get(guest_id) or detail.get("guest_name") or detail.get("id") or guest_id or "System"
+    action = entry.get("action")
+    label_action = "payment_confirmed_webhook" if (
+        action == "payment_confirmed" and detail.get("via") == "webhook"
+    ) else action
     view = {
         "time": entry.get("time", ""),
         "actor": str(entry.get("actor", "system")).upper(),
-        "label": ACTION_LABELS.get(entry.get("action"), str(entry.get("action", "Activity")).replace("_", " ").title()),
+        "label": ACTION_LABELS.get(label_action, str(action or "Activity").replace("_", " ").title()),
         "subject": subject,
     }
     if entry.get("action") == "ai_check_failed":
         view["diagnostic"] = detail.get("code") if detail.get("code") is not None else detail.get("error_type")
     return view
+
+
+def _approval_state(approvals):
+    pairs = [(item.get("id"), item.get("status")) for item in approvals]
+    version = hashlib.sha256(json.dumps(pairs, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    sent = sum(1 for item in approvals if item.get("type") == "extension" and item.get("status") == "sent")
+    return {"version": version, "sent": sent}
 
 
 def build_dashboard():
@@ -640,6 +697,7 @@ def build_dashboard():
         "activity": _activity_views(log_entries, flights, len(guests), guest_names),
         "status_labels": STATUS_LABELS,
         "tracker_data": _tracker_data(guest_rows, approvals),
+        "payment_state": _approval_state(approvals),
         "replay_active": last_ai_source == "replay_mode",
     }
 
@@ -694,6 +752,77 @@ def dashboard():
 @app.get("/healthz")
 def healthz():
     return {"status": "ok"}
+
+
+@app.get("/api/state")
+def api_state():
+    """Read the current visitor's approval version without changing any state."""
+    workspace_id = session.get("workspace_id")
+    if not isinstance(workspace_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(workspace_id):
+        return {"error": "Workspace not found"}, 404
+    workspace_dir = os.path.join(_workspaces_dir(), workspace_id)
+    if not os.path.isdir(workspace_dir) or os.path.islink(workspace_dir):
+        return {"error": "Workspace not found"}, 404
+    tokens = set_workspace_paths(workspace_dir)
+    try:
+        return _approval_state(read_json(approvals_path(), []))
+    finally:
+        reset_workspace_paths(tokens)
+
+
+@app.post("/webhooks/paypal")
+def paypal_webhook():
+    """Use a verified PayPal notice to trigger a fresh invoice-status lookup."""
+    try:
+        env = load_env()
+        if not env.get("PAYPAL_WEBHOOK_ID"):
+            log_decision("system", "webhook_not_configured", {})
+            return {"status": "unavailable"}, 503
+
+        event = request.get_json(silent=True)
+        if not isinstance(event, dict):
+            return {"status": "invalid"}, 400
+        if not verify_webhook_signature(env, request.headers, event):
+            return {"status": "invalid"}, 400
+        if event.get("event_type") != "INVOICING.INVOICE.PAID":
+            return {"status": "ignored"}, 200
+
+        resource = event.get("resource")
+        invoice_id = resource.get("id") if isinstance(resource, dict) else None
+        if not isinstance(invoice_id, str) or not invoice_id:
+            return {"status": "ignored"}, 200
+        workspace_id = _workspace_for_invoice(invoice_id)
+        if workspace_id is None:
+            return {"status": "ignored"}, 200
+
+        with WORKSPACE_STATE_LOCK:
+            workspace_dir = os.path.join(_workspaces_dir(), workspace_id)
+            if not os.path.isdir(workspace_dir) or os.path.islink(workspace_dir):
+                return {"status": "ignored"}, 200
+            workspace_lock = WORKSPACE_LOCKS.setdefault(workspace_id, threading.Lock())
+            ACTIVE_REQUESTS[workspace_id] = ACTIVE_REQUESTS.get(workspace_id, 0) + 1
+        try:
+            if not workspace_lock.acquire(timeout=10):
+                return {"status": "busy"}, 503
+            try:
+                tokens = set_workspace_paths(workspace_dir)
+                try:
+                    confirm_invoice_if_paid(invoice_id, env, source="webhook")
+                finally:
+                    reset_workspace_paths(tokens)
+            finally:
+                workspace_lock.release()
+        finally:
+            with WORKSPACE_STATE_LOCK:
+                ACTIVE_REQUESTS[workspace_id] -= 1
+                if not ACTIVE_REQUESTS[workspace_id]:
+                    del ACTIVE_REQUESTS[workspace_id]
+        return {"status": "ok"}, 200
+    except RequestEntityTooLarge:
+        return {"status": "too large"}, 413
+    except (SystemExit, Exception) as error:
+        log_decision("system", "webhook_failed", {"error_type": type(error).__name__})
+        return {"status": "unavailable"}, 503
 
 
 @app.post("/run-ai")
@@ -761,7 +890,7 @@ def run_ai_check():
 def reset_demo():
     try:
         archive_demo_state()
-    except OSError as error:
+    except (OSError, InvoiceIndexError) as error:
         _record_web_failure("reset_demo", error)
         flash("The demo could not be reset. Existing data was left in place where possible.", "error")
     else:
@@ -777,6 +906,7 @@ def approve_proposal(item_id):
         try:
             item, _amount = approve_extension(
                 item_id, before_create=quota.reserve, on_invoice_created=quota.mark_created,
+                on_invoice_ready=lambda invoice_id: _remember_invoice(invoice_id, g.workspace_id),
             )
         finally:
             quota.release_if_unused()
@@ -785,6 +915,9 @@ def approve_proposal(item_id):
         flash(str(error), "error")
     except ValueError as error:
         flash(str(error), "error")
+    except OSError as error:
+        _record_web_failure("invoice_index", error)
+        flash("The invoice was saved, but automatic payment updates are unavailable. Use Check payments now.", "error")
     except (SystemExit, RuntimeError) as error:
         _record_web_failure("approve_extension", error)
         flash("PayPal could not create or send the invoice. The saved status is shown below; no duplicate invoice will be created.", "error")

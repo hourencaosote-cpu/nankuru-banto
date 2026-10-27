@@ -13,6 +13,8 @@ services:
         sync: false
       - key: PAYPAL_CLIENT_SECRET
         sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
       - key: BUYER_EMAIL
         sync: false
       - key: GEMINI_API_KEY

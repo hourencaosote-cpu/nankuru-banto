@@ -10,6 +10,34 @@ from paypal_tools import _get_token, get_invoice_status
 PAID = ("PAID", "MARKED_AS_PAID")
 
 
+def confirm_invoice_if_paid(invoice_id, env, token=None, source="check_payments"):
+    """Confirm one sent extension only after checking its current PayPal status."""
+    queue = read_json(approvals_path(), [])
+    item = next(
+        (entry for entry in queue if entry.get("type") == "extension"
+         and entry.get("invoice_id") == invoice_id and entry.get("status") == "sent"),
+        None,
+    )
+    if item is None:
+        return None
+
+    status = get_invoice_status(env, invoice_id, token=token)
+    if status in PAID:
+        item["status"] = "confirmed"
+        write_json(approvals_path(), queue)
+        log_decision(
+            "paypal", "payment_confirmed",
+            {"id": item["id"], "invoice_id": invoice_id,
+             "amount_usd": item["amount_usd"], "via": source},
+        )
+    elif source == "check_payments":
+        log_decision(
+            "paypal", "payment_pending",
+            {"id": item["id"], "invoice_id": invoice_id, "paypal_status": status},
+        )
+    return {"item": item, "paypal_status": status, "confirmed": status in PAID}
+
+
 def check_payments(env=None):
     """送信済み請求書を確認し、支払い済みの延泊を確定する。"""
     queue = read_json(approvals_path(), [])
@@ -28,7 +56,7 @@ def check_payments(env=None):
     token = _get_token(env)
     for item in sent:
         try:
-            status = get_invoice_status(env, item["invoice_id"], token=token)
+            outcome = confirm_invoice_if_paid(item["invoice_id"], env, token=token)
         except (RuntimeError, SystemExit):
             result["errors"].append(item)
             log_decision(
@@ -38,24 +66,14 @@ def check_payments(env=None):
             )
             continue
 
+        if outcome is None:
+            continue
         result["checked"] += 1
-        if status in PAID:
-            item["status"] = "confirmed"
-            result["newly_confirmed"].append(item)
-            result["confirmed"].append(item)
-            log_decision(
-                "paypal",
-                "payment_confirmed",
-                {"id": item["id"], "invoice_id": item["invoice_id"], "amount_usd": item["amount_usd"]},
-            )
+        if outcome["confirmed"]:
+            result["newly_confirmed"].append(outcome["item"])
+            result["confirmed"].append(outcome["item"])
         else:
-            result["pending"].append({"item": item, "paypal_status": status})
-            log_decision(
-                "paypal",
-                "payment_pending",
-                {"id": item["id"], "invoice_id": item["invoice_id"], "paypal_status": status},
-            )
-    write_json(approvals_path(), queue)
+            result["pending"].append({"item": item, "paypal_status": outcome["paypal_status"]})
     return result
 
 

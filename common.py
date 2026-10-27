@@ -16,6 +16,7 @@ _log_override = ContextVar("log_path", default=None)
 ENV_KEYS = (
     "PAYPAL_CLIENT_ID",
     "PAYPAL_CLIENT_SECRET",
+    "PAYPAL_WEBHOOK_ID",
     "BUYER_EMAIL",
     "GEMINI_API_KEY",
     "GEMINI_MODEL",

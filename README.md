@@ -28,7 +28,7 @@ The builder has worked at hotels in Okinawa and Hokkaido, and has been on shift 
 2. **The AI proposes.** For each stranded guest it proposes only the nights needed to reach the next available flight, with a message drafted in the guest's own language.
 3. **Code-enforced safety rules filter every proposal.** The AI cannot change them (see below).
 4. **A manager approves** each proposal with one click on the dashboard.
-5. **PayPal closes the loop.** Approval creates and sends a PayPal invoice. When the guest pays, the dashboard confirms the extension.
+5. **PayPal closes the loop.** Approval creates and sends a PayPal invoice. When the guest pays, a PayPal webhook confirms the extension within seconds, without a manager pressing a button.
 
 ```mermaid
 flowchart LR
@@ -41,7 +41,7 @@ flowchart LR
     M -- reject --> X[Nothing sent<br/>nothing charged]
     M -- approve --> P[PayPal Invoicing API<br/>create + send invoice]
     P --> C[Guest pays<br/>in PayPal]
-    C --> K[Payment check<br/>extension confirmed]
+    C --> K[Verified PayPal webhook<br/>extension confirmed]
 ```
 
 ## Safety by design
@@ -70,6 +70,8 @@ All calls use the **PayPal REST API in the Sandbox** ([`paypal_tools.py`](paypal
 - `POST /v2/invoicing/invoices/{id}/send` — send it to the guest
 - `POST /v2/invoicing/invoices/{id}/payments` — **Sandbox demo only:** a manager-pressed button that records an external payment, for judges who don't want to log in as the guest. The guest-pays-in-PayPal path is the primary flow.
 - `GET /v2/invoicing/invoices/{id}` — check status; `PAID` confirms the extension
+- `POST /v1/notifications/verify-webhook-signature` — verify that a payment notification came from PayPal
+- `INVOICING.INVOICE.PAID` webhook — after verification, fetch the invoice with `GET /v2/invoicing/invoices/{id}` and confirm the extension only when PayPal reports it paid
 
 Paying the invoice **is** the guest's confirmation: no forms, no front-desk queue.
 
@@ -112,7 +114,7 @@ In `env.txt`:
 2. **Run AI check** — watch the agent check flights, ignore the rumour, propose 3 extensions and send 1 OTA booking to staff
 3. **Approve & send PayPal invoice** on a guest
 4. Pay as the guest in the Sandbox Personal account, **or** click **Record sandbox payment**
-5. **Check payments** — the extension is confirmed
+5. The extension is confirmed automatically after the PayPal webhook; **Check payments now** is available if the notification was missed
 
 A terminal-only version is also available: `python3 agent.py --reset`, `python3 approve.py`, `python3 check_payments.py`.
 
@@ -129,6 +131,8 @@ Gemini and PayPal are mocked; tests make no network calls.
 ## Deploy to Render
 
 Create a Render Blueprint from this repository using `render.yaml`. Set the environment variables `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `BUYER_EMAIL`, `GEMINI_API_KEY`, `GEMINI_MODEL`, and `SECRET_KEY` in Render's dashboard. Optionally set `INVOICE_BUSINESS_NAME` for the invoice sender; otherwise it is `Nankuru Demo Inn`. Use PayPal Sandbox credentials. The health check endpoint is `/healthz`.
+
+In the PayPal Sandbox app settings, create a webhook with URL `https://<your-app>/webhooks/paypal` and subscribe to **Invoice paid** (`INVOICING.INVOICE.PAID`). Copy the displayed Webhook ID into Render's `PAYPAL_WEBHOOK_ID` environment variable. The dashboard checks for payment updates automatically; **Check payments now** remains available if a notification was missed.
 
 ## Project structure
 

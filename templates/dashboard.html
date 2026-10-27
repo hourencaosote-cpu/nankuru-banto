@@ -41,9 +41,10 @@
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button class="button button-reset" type="submit">Reset demo</button>
         </form>
-        <form method="post" action="{{ url_for('check_payments') }}" class="js-loading-form" data-loading-message="Checking PayPal sandbox…">
+        <form method="post" action="{{ url_for('check_payments') }}" class="js-loading-form payment-check-action" data-loading-message="Checking PayPal sandbox…">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button class="button button-secondary" type="submit">Check payments</button>
+          <button class="button button-secondary" type="submit">Check payments now</button>
+          <small>Payments are confirmed automatically via PayPal webhooks.</small>
         </form>
         <form method="post" action="{{ url_for('run_ai_check') }}" class="js-loading-form" data-loading-message="AI is checking official notices…">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -330,6 +331,7 @@
   </div>
 
   <script type="application/json" id="tracker-data">{{ tracker_data|tojson }}</script>
+  <script type="application/json" id="payment-state">{{ payment_state|tojson }}</script>
   <script defer src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.js"></script>
   <script defer src="{{ url_for('static', filename='tracker.js') }}"></script>
   <script>
@@ -346,6 +348,22 @@
         form.querySelectorAll('button').forEach(function (button) { button.disabled = true; });
       });
     });
+
+    var paymentState = JSON.parse(document.getElementById('payment-state').textContent);
+    if (paymentState.sent > 0) {
+      var polling = false;
+      window.setInterval(function () {
+        if (document.hidden || polling) return;
+        polling = true;
+        fetch('{{ url_for('api_state') }}', { credentials: 'same-origin', cache: 'no-store' })
+          .then(function (response) { return response.ok ? response.json() : null; })
+          .then(function (state) {
+            if (state && state.version !== paymentState.version) window.location.reload();
+          })
+          .catch(function () {})
+          .finally(function () { polling = false; });
+      }, 5000);
+    }
   </script>
 </body>
 </html>

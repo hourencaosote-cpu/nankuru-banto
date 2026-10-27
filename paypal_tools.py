@@ -105,6 +105,31 @@ def get_invoice_status(env, invoice_id, token=None):
     return res.get("status", "")
 
 
+def verify_webhook_signature(env, headers, event):
+    """Ask PayPal Sandbox to verify a received webhook before using it."""
+    header_fields = {
+        "auth_algo": "PAYPAL-AUTH-ALGO",
+        "cert_url": "PAYPAL-CERT-URL",
+        "transmission_id": "PAYPAL-TRANSMISSION-ID",
+        "transmission_sig": "PAYPAL-TRANSMISSION-SIG",
+        "transmission_time": "PAYPAL-TRANSMISSION-TIME",
+    }
+    header_values = {name.lower(): value for name, value in headers.items()}
+    values = {field: header_values.get(header.lower()) for field, header in header_fields.items()}
+    webhook_id = env.get("PAYPAL_WEBHOOK_ID")
+    if not webhook_id or not all(values.values()):
+        return False
+
+    status, response = _call(
+        "POST", "/v1/notifications/verify-webhook-signature",
+        token=_get_token(env),
+        body={**values, "webhook_id": webhook_id, "webhook_event": event},
+    )
+    if status != 200:
+        raise RuntimeError("PayPal webhook verification is unavailable.")
+    return response.get("verification_status") == "SUCCESS"
+
+
 def record_invoice_payment(env, invoice_id, amount):
     """Record a manager-entered external payment on a sandbox invoice."""
     if not invoice_id:

@@ -33,7 +33,8 @@ def _find_item(queue, item_id):
     raise ValueError(f"Approval item '{item_id}' was not found.")
 
 
-def approve_extension(item_id, env=None, before_create=None, on_invoice_created=None):
+def approve_extension(item_id, env=None, before_create=None, on_invoice_created=None,
+                      on_invoice_ready=None):
     """人が承認した延泊だけを PayPal sandbox の請求書にする。"""
     queue = read_json(approvals_path(), [])
     item = _find_item(queue, item_id)
@@ -68,6 +69,9 @@ def approve_extension(item_id, env=None, before_create=None, on_invoice_created=
         item["invoice_id"] = invoice_id
         item["status"] = "approved"
         write_json(approvals_path(), queue)
+
+    if on_invoice_ready:
+        on_invoice_ready(item["invoice_id"])
 
     if buyer_email:
         try:
