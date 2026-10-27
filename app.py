@@ -890,7 +890,7 @@ def run_ai_check():
 def reset_demo():
     try:
         archive_demo_state()
-    except (OSError, InvoiceIndexError) as error:
+    except OSError as error:
         _record_web_failure("reset_demo", error)
         flash("The demo could not be reset. Existing data was left in place where possible.", "error")
     else:
@@ -902,11 +902,23 @@ def reset_demo():
 @workspace_action("approve_proposal")
 def approve_proposal(item_id):
     quota = InvoiceQuota(g.workspace_id)
+    index_failed = False
+
+    def remember_invoice(invoice_id):
+        nonlocal index_failed
+        try:
+            _remember_invoice(invoice_id, g.workspace_id)
+        except (Exception, SystemExit) as error:
+            index_failed = True
+            log_decision("system", "web_action_failed", {
+                "action": "invoice_index", "error_type": type(error).__name__,
+            })
+
     try:
         try:
             item, _amount = approve_extension(
                 item_id, before_create=quota.reserve, on_invoice_created=quota.mark_created,
-                on_invoice_ready=lambda invoice_id: _remember_invoice(invoice_id, g.workspace_id),
+                on_invoice_ready=remember_invoice,
             )
         finally:
             quota.release_if_unused()
@@ -915,15 +927,15 @@ def approve_proposal(item_id):
         flash(str(error), "error")
     except ValueError as error:
         flash(str(error), "error")
-    except OSError as error:
-        _record_web_failure("invoice_index", error)
-        flash("The invoice was saved, but automatic payment updates are unavailable. Use Check payments now.", "error")
-    except (SystemExit, RuntimeError) as error:
+    except (SystemExit, RuntimeError, OSError) as error:
         _record_web_failure("approve_extension", error)
         flash("PayPal could not create or send the invoice. The saved status is shown below; no duplicate invoice will be created.", "error")
     else:
         if item.get("status") == "sent":
-            flash("Approved. The PayPal sandbox invoice was sent.", "success")
+            message = "Approved. The PayPal sandbox invoice was sent."
+            if index_failed:
+                message += " Automatic payment updates are unavailable for this invoice. Use Check payments now."
+            flash(message, "success")
         else:
             flash("Approved. A PayPal sandbox invoice draft was created; no email was sent.", "success")
     return redirect(url_for("dashboard") + "#review-queue")

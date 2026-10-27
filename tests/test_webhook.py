@@ -268,6 +268,34 @@ class PayPalWebhookTests(unittest.TestCase):
         index = json.loads((self.data_dir / "workspaces" / "_invoice_index.json").read_text(encoding="utf-8"))
         self.assertEqual(index["INV-DRAFT"], self.workspace_id)
 
+    def test_invoice_index_failure_is_logged_but_invoice_is_sent(self):
+        pending = self._item()
+        pending["status"] = "pending"
+        pending.pop("invoice_id")
+        self._write_queue([pending])
+        self.client.get("/")
+        with self.client.session_transaction() as session_data:
+            csrf = session_data["csrf_token"]
+        with mock.patch.object(approve, "load_env", return_value={"BUYER_EMAIL": "buyer@example.test"}), \
+             mock.patch.object(approve, "create_extension_invoice", return_value=("INV-UNINDEXED", "128.00")), \
+             mock.patch.object(web_app, "_remember_invoice", side_effect=OSError("private detail")), \
+             mock.patch.object(approve, "send_invoice", return_value=("SENT", "")) as send:
+            response = self.client.post("/proposals/P001/approve", data={"csrf_token": csrf})
+
+        self.assertEqual(response.status_code, 302)
+        send.assert_called_once()
+        self.assertEqual(self._queue()[0]["status"], "sent")
+        failures = [entry["detail"] for entry in self._entries(self.workspace_log)
+                    if entry["action"] == "web_action_failed"]
+        self.assertEqual(failures, [{"action": "invoice_index", "error_type": "OSError"}])
+        self.assertNotIn("private detail", self.workspace_log.read_text(encoding="utf-8"))
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn(
+            "Approved. The PayPal sandbox invoice was sent. "
+            "Automatic payment updates are unavailable for this invoice. Use Check payments now.",
+            page,
+        )
+
     def test_cli_approval_does_not_add_to_web_invoice_index(self):
         cli_queue = self.data_dir / "approvals.json"
         pending = self._item()
