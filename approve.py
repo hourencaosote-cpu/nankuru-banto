@@ -9,12 +9,14 @@
 """
 
 import os
+from decimal import Decimal, InvalidOperation
 
 import common
 from common import approvals_path, flights_path, load_env, log_decision, read_json, write_json
 from check_payments import PAID, confirm_invoice_if_paid
 from paypal_tools import (cancel_invoice, create_extension_invoice, delete_invoice_draft,
-                          get_invoice_status, read_invoice, send_invoice, send_reminder)
+                          get_capture, get_invoice_payment, get_invoice_status, read_invoice,
+                          record_external_refund, refund_capture, send_invoice, send_reminder)
 
 
 def ask(prompt):
@@ -244,6 +246,97 @@ def reject_reminder(item_id):
     return reminder
 
 
+def _same_usd_amount(payment_amount, expected):
+    if not isinstance(payment_amount, dict) or payment_amount.get("currency_code") != "USD":
+        return False
+    try:
+        return Decimal(str(payment_amount.get("value"))) == Decimal(str(expected))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+
+
+def approve_refund(item_id, env=None):
+    """A manager refunds a confirmed extension after a fresh official notice check."""
+    queue = read_json(approvals_path(), [])
+    refund = _find_item(queue, item_id)
+    if refund.get("type") != "refund" or refund.get("status") != "pending":
+        raise ValueError("This refund is no longer waiting for approval.")
+    extension = _find_item(queue, refund.get("proposal_id"))
+    if extension.get("type") != "extension" or extension.get("status") != "confirmed":
+        raise ValueError("The original extension is no longer eligible for a refund.")
+    if not extension.get("invoice_id") or refund.get("amount_usd") != extension.get("amount_usd"):
+        raise ValueError("The saved invoice or refund amount is invalid.")
+
+    guest = next((entry for entry in read_json(os.path.join(common.DATA_DIR, "guests.json"), {}).get("guests", [])
+                  if entry.get("id") == extension.get("guest_id")), None)
+    flight_number = guest.get("departure_flight") if guest else None
+    flight_status = read_json(flights_path(), {}).get("flights", {}).get(flight_number, {}).get("status")
+    if not flight_status or flight_status == "cancelled":
+        log_decision("gate", "refund_blocked_notice_changed", {
+            "id": item_id, "guest_id": extension.get("guest_id"),
+            "flight": flight_number, "status": flight_status,
+        })
+        raise ValueError("The official notice no longer shows this guest’s flight as restored. No refund was issued.")
+
+    env = env or load_env()
+    try:
+        payment = get_invoice_payment(env, extension["invoice_id"])
+        if payment is None or not _same_usd_amount(payment.get("amount"), refund["amount_usd"]):
+            raise RuntimeError("The PayPal payment does not match the full refund amount.")
+        if payment.get("type") == "PAYPAL":
+            capture_id = payment.get("payment_id")
+            if not capture_id or not refund.get("refund_request_id"):
+                raise RuntimeError("The PayPal capture or saved refund request ID is missing.")
+            capture = get_capture(env, capture_id)
+            if capture.get("status") != "COMPLETED":
+                refund["status"] = "superseded"
+                write_json(approvals_path(), queue)
+                log_decision("human", "refund_skipped_not_refundable", {
+                    "id": item_id, "proposal_id": extension["id"],
+                    "guest_id": extension.get("guest_id"),
+                })
+                return {"status": "superseded", "item": refund}
+            if not _same_usd_amount(capture.get("amount"), refund["amount_usd"]):
+                raise RuntimeError("The PayPal capture does not match the full refund amount.")
+            result = refund_capture(env, capture_id, refund["amount_usd"],
+                                    refund["refund_request_id"], refund["message_draft"])
+            method = "paypal"
+        else:
+            result = record_external_refund(env, extension["invoice_id"], refund["amount_usd"])
+            method = "external"
+    except (Exception, SystemExit) as error:
+        log_decision("human", "refund_failed", {
+            "id": item_id, "proposal_id": extension["id"],
+            "guest_id": extension.get("guest_id"), "error_type": type(error).__name__,
+        })
+        raise
+
+    extension["status"] = "refunded"
+    refund["status"] = "done"
+    refund["refund_id"] = result.get("refund_id")
+    refund["method"] = method
+    write_json(approvals_path(), queue)
+    log_decision("human", "approved_refund", {
+        "id": item_id, "proposal_id": extension["id"],
+        "guest_id": extension.get("guest_id"), "amount_usd": refund["amount_usd"],
+        "method": method,
+    })
+    return {"status": "done", "item": refund}
+
+
+def reject_refund(item_id):
+    queue = read_json(approvals_path(), [])
+    item = _find_item(queue, item_id)
+    if item.get("type") != "refund" or item.get("status") != "pending":
+        raise ValueError("This refund is no longer waiting for a decision.")
+    item["status"] = "rejected"
+    write_json(approvals_path(), queue)
+    log_decision("human", "manager_rejected_refund", {
+        "id": item_id, "proposal_id": item.get("proposal_id"), "guest_id": item.get("guest_id"),
+    })
+    return item
+
+
 def defer_item(item_id):
     queue = read_json(approvals_path(), [])
     item = _find_item(queue, item_id)
@@ -346,6 +439,25 @@ def main():
             elif answer == "n":
                 reject_reminder(item["id"])
                 print("  → 却下しました。催促は送っていません。")
+            else:
+                defer_item(item["id"])
+                print("  → あとで確認します。")
+        elif item["type"] == "refund":
+            print(f"[{item['id']}] 全額返金の提案　{item['guest_name']} 様（USD {item['amount_usd']:.2f}）")
+            print(f"  根拠: {item['evidence']}")
+            print(f"  AIの理由: {item['reason']}")
+            print("  案内文の下書き:\n    " + item["message_draft"].replace("\n", "\n    "))
+            answer = ask("\nPayPal Sandbox で返金しますか？ y / n / s : ")
+            if answer == "y":
+                try:
+                    result = approve_refund(item["id"], env=env)
+                    print("  → 支払いが返金可能な状態ではないため返金しませんでした。" if result["status"] == "superseded"
+                          else "  → PayPal Sandbox で返金しました。")
+                except (RuntimeError, ValueError, SystemExit) as error:
+                    print(f"  → 返金に失敗しました: {type(error).__name__}")
+            elif answer == "n":
+                reject_refund(item["id"])
+                print("  → 却下しました。返金はしていません。")
             else:
                 defer_item(item["id"])
                 print("  → あとで確認します。")

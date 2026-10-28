@@ -12,7 +12,7 @@
     style: "currency",
     currency: "USD",
   });
-  var statusStyles = ["pending", "approved", "sent", "confirmed", "rejected"];
+  var statusStyles = ["pending", "approved", "sent", "confirmed", "refunded", "rejected"];
 
   function statusBadge(params) {
     if (params.node.rowPinned || !params.value) {

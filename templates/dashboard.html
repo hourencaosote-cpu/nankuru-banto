@@ -105,7 +105,7 @@
         <div class="metric-icon metric-icon-gold" aria-hidden="true">
           <svg viewBox="0 0 20 20"><path d="M10 3v14m3-11.5H8.5a2.5 2.5 0 0 0 0 5h3a2.5 2.5 0 0 1 0 5H6.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
         </div>
-        <div><span>Extension revenue</span><strong>${{ metrics.paid_revenue|money }}</strong><small>${{ metrics.unpaid_revenue|money }} unpaid</small></div>
+        <div><span>Extension revenue</span><strong>${{ metrics.paid_revenue|money }}</strong><small>${{ metrics.unpaid_revenue|money }} unpaid · Refunded USD {{ metrics.refunded_total|money }}</small></div>
       </article>
     </section>
 
@@ -138,7 +138,7 @@
           <p>AI prepares. Safety rules filter. You decide.</p>
         </div>
 
-        {% if not proposals and not staff_notes and not cancellations and not reminders %}
+        {% if not proposals and not staff_notes and not cancellations and not reminders and not refunds %}
           <div class="empty-state">
             <div class="empty-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M7 12.5 10.2 16 17 8.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -163,6 +163,8 @@
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 10.5 3 3 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 {{ 'Sandbox payment recorded by manager.' if proposal.payment_recorded_by_manager else 'Payment received.' }} Extend the room assignment for {{ proposal.nights }} night{% if proposal.nights != 1 %}s{% endif %}.
               </div>
+            {% elif proposal.status == 'refunded' %}
+              <div class="sent-banner">The full extension payment was refunded. No room extension is needed.</div>
             {% elif proposal.status == 'sent' %}
               <div class="sent-banner">{{ 'Sandbox payment recorded by manager · Waiting for PayPal status confirmation' if proposal.payment_recorded_by_manager else 'PayPal sandbox invoice sent · Waiting for payment' }}</div>
             {% elif proposal.status == 'approved' %}
@@ -301,6 +303,44 @@
                   <button class="button button-danger-ghost" type="submit">Reject</button>
                 </form>
                 <form method="post" action="{{ url_for('review_later', item_id=reminder.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-quiet" type="submit">Later</button>
+                </form>
+              </div>
+            {% endif %}
+          </article>
+        {% endfor %}
+
+        {% for refund in refunds %}
+          <article class="proposal-card status-border-{{ refund.status }}">
+            <header class="card-header">
+              <div>
+                <div class="card-kicker"><span>{{ refund.id }}</span><span>{{ refund.language }}</span></div>
+                <h3>REFUND · {{ refund.guest_name }}</h3>
+              </div>
+              <span class="status-badge status-{{ refund.status }}">{{ 'Refunded in PayPal' if refund.status == 'done' and refund.method == 'paypal' else 'Refund recorded in PayPal (sandbox external payment)' if refund.status == 'done' else 'Not refundable — already refunded' if refund.status == 'superseded' else status_labels.get(refund.status, refund.status|title) }}</span>
+            </header>
+            <div class="price-block"><div><span>Full refund</span><strong>USD {{ refund.amount_usd|money }}</strong></div><p>USD {{ refund.amount_usd|money }} · full refund, set by code</p></div>
+            <dl class="decision-details">
+              <div><dt>Official evidence</dt><dd>{{ refund.evidence }}</dd></div>
+              <div><dt>AI rationale</dt><dd>{{ refund.reason }}</dd></div>
+            </dl>
+            <div class="message-preview">
+              <div class="message-heading"><span>Guest refund message draft</span><span>{{ refund.language }}</span></div>
+              <p>{{ refund.message_draft }}</p>
+            </div>
+            {% if refund.status == 'pending' %}
+              <p class="cancellation-warning">Nothing is refunded until you approve.</p>
+              <div class="card-actions">
+                <form method="post" action="{{ url_for('approve_refund_action', item_id=refund.id) }}" class="js-loading-form" data-loading-message="Checking and refunding the PayPal sandbox payment…">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-primary" type="submit">Approve &amp; refund via PayPal</button>
+                </form>
+                <form method="post" action="{{ url_for('reject_refund_action', item_id=refund.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-danger-ghost" type="submit">Reject</button>
+                </form>
+                <form method="post" action="{{ url_for('review_later', item_id=refund.id) }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button class="button button-quiet" type="submit">Later</button>
                 </form>

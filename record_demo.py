@@ -8,7 +8,9 @@ import os
 
 import agent
 from approve import approve_extension
+from check_payments import confirm_invoice_if_paid
 from common import approvals_path, load_env, log_path, read_json, write_json
+from paypal_tools import record_invoice_payment
 
 
 def main():
@@ -36,9 +38,22 @@ def main():
         approved, _ = approve_extension(emily["id"], env=env)
         if approved["status"] != "sent":
             raise RuntimeError("Emily の請求書が送付済みになりませんでした。")
+        ken = next(item for item in read_json(approvals_path(), [])
+                   if item.get("type") == "extension" and item.get("guest_id") == "G003"
+                   and item.get("status") == "pending")
+        approved, _ = approve_extension(ken["id"], env=env)
+        if approved["status"] != "sent":
+            raise RuntimeError("Ken の請求書が送付済みになりませんでした。")
+        record_invoice_payment(env, approved["invoice_id"], approved["amount_usd"])
+        queue = read_json(approvals_path(), [])
+        next(item for item in queue if item.get("id") == ken["id"])["payment_recorded_by_manager"] = True
+        write_json(approvals_path(), queue)
+        result = confirm_invoice_if_paid(approved["invoice_id"], env, source="record_demo")
+        if result is None or not result["confirmed"]:
+            raise RuntimeError("Ken の請求書を支払い済みとして確定できませんでした。")
         os.environ["NANKURU_NOTICE"] = "update"
         agent.run_ai(env, record=True, recording_path=agent.UPDATE_REPLAY_PATH,
-                     recording_required_type="cancellation_and_reminder")
+                     recording_required_type="cancellation_reminder_refund")
     except (Exception, SystemExit) as error:
         raise SystemExit(f"録画を中断しました（{type(error).__name__}）。状態を確認してください。") from None
     finally:
@@ -50,8 +65,9 @@ def main():
     items = read_json(approvals_path(), [])
     cancellations = sum(item.get("type") == "invoice_cancellation" for item in items)
     reminders = sum(item.get("type") == "payment_reminder" for item in items)
-    print(f"初回の延泊提案を録画し、Kim と Emily の Sandbox 請求書を送付しました。更新後の取り消し提案 {cancellations} 件と催促提案 {reminders} 件を録画しました。")
-    print("取り消しの承認は行っていません。")
+    refunds = sum(item.get("type") == "refund" for item in items)
+    print(f"初回の延泊提案を録画し、Kim・Emily・Ken の Sandbox 請求書を送付しました。更新後の取り消し提案 {cancellations} 件、催促提案 {reminders} 件、返金提案 {refunds} 件を録画しました。")
+    print("取り消し・催促・返金の承認は行っていません。")
 
 
 if __name__ == "__main__":

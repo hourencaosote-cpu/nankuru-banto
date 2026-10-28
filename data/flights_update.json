@@ -16,9 +16,9 @@
     },
     "DEMO-303": {
       "date": "2026-08-07",
-      "status": "cancelled",
-      "next_available_date": "2026-08-10",
-      "official_source": "Demo Airlines official notice (fictional)"
+      "status": "on_time",
+      "next_available_date": null,
+      "official_source": "Demo Airlines official update (fictional): service restored"
     },
     "DEMO-404": {
       "date": "2026-08-07",

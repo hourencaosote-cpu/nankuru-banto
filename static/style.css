@@ -300,12 +300,12 @@ h1, h2, h3, .metric-card strong, .price-block strong, .loading-card strong { fon
 .status-border-approved::before, .status-border-sent::before { background: #5794b4; }
 .status-border-confirmed::before { background: #4c9d6d; }
 .status-border-rejected::before { background: #c76d64; }
-.status-border-cancelled::before, .status-border-done::before, .status-border-superseded::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: #8b6b9b; }
+.status-border-cancelled::before, .status-border-refunded::before, .status-border-done::before, .status-border-superseded::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: #8b6b9b; }
 .cancellation-card { border-color: #d7c9df; }
 .cancellation-card .card-header h3 { color: #654676; }
 .cancellation-warning { margin: 0 20px 12px; color: #704d80; font-size: 0.76rem; font-weight: 750; }
 .cancellation-mail-note { margin: -8px 20px 14px; color: var(--muted); font-size: 0.7rem; }
-.status-cancelled, .status-done { color: #654676; background: #f2eaf5; }
+.status-cancelled, .status-refunded, .status-done { color: #654676; background: #f2eaf5; }
 .status-superseded { color: var(--green-700); background: var(--green-50); }
 .response-cancelled { color: #654676; border-color: #aa83b9; }
 .notice-update-form { margin-top: 5px; }

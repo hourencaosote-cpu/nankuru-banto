@@ -17,22 +17,24 @@ from decimal import Decimal, InvalidOperation
 API_BASE = "https://api-m.sandbox.paypal.com"
 
 
-def _call(method, path, token=None, body=None, basic_auth=None, form=None):
-    headers = {"Accept": "application/json"}
+def _call(method, path, token=None, body=None, basic_auth=None, form=None, headers=None):
+    request_headers = {"Accept": "application/json"}
     data = None
     if basic_auth:
-        headers["Authorization"] = "Basic " + base64.b64encode(basic_auth.encode()).decode()
+        request_headers["Authorization"] = "Basic " + base64.b64encode(basic_auth.encode()).decode()
     if token:
-        headers["Authorization"] = "Bearer " + token
+        request_headers["Authorization"] = "Bearer " + token
     if form is not None:
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        request_headers["Content-Type"] = "application/x-www-form-urlencoded"
         data = urllib.parse.urlencode(form).encode()
     elif body is not None:
-        headers["Content-Type"] = "application/json"
-        headers["Prefer"] = "return=representation"
+        request_headers["Content-Type"] = "application/json"
+        request_headers["Prefer"] = "return=representation"
         data = json.dumps(body).encode()
+    if headers:
+        request_headers.update(headers)
 
-    req = urllib.request.Request(API_BASE + path, data=data, headers=headers, method=method)
+    req = urllib.request.Request(API_BASE + path, data=data, headers=request_headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as res:
             text = res.read().decode()
@@ -120,6 +122,80 @@ def read_invoice(env, invoice_id):
         "viewed_by_recipient": bool(detail.get("viewed_by_recipient", False)),
         "last_sent_time": metadata.get("last_sent_time"),
     }
+
+
+def _usd_amount(amount):
+    try:
+        value = Decimal(str(amount))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("The saved refund amount is invalid.") from None
+    if not value.is_finite() or value <= 0 or value != value.quantize(Decimal("0.01")):
+        raise ValueError("The saved refund amount is invalid.")
+    return f"{value:.2f}"
+
+
+def get_invoice_payment(env, invoice_id):
+    """Return only the first invoice payment transaction needed for a refund."""
+    token = _get_token(env)
+    path = f"/v2/invoicing/invoices/{urllib.parse.quote(str(invoice_id), safe='')}"
+    status, invoice = _call("GET", path, token=token)
+    if status != 200:
+        raise RuntimeError("PayPal could not read the invoice payment.")
+    payments = invoice.get("payments") or {}
+    transactions = payments.get("transactions") if isinstance(payments, dict) else None
+    if not isinstance(transactions, list) or not transactions:
+        return None
+    transaction = transactions[0]
+    if not isinstance(transaction, dict):
+        return None
+    amount = transaction.get("amount") or {}
+    return {
+        "payment_id": transaction.get("payment_id"),
+        "type": transaction.get("type"),
+        "amount": {"currency_code": amount.get("currency_code"), "value": amount.get("value")}
+        if isinstance(amount, dict) else None,
+    }
+
+
+def get_capture(env, capture_id):
+    """Read a PayPal capture without exposing payer or merchant details."""
+    token = _get_token(env)
+    path = f"/v2/payments/captures/{urllib.parse.quote(str(capture_id), safe='')}"
+    status, capture = _call("GET", path, token=token)
+    if status != 200:
+        raise RuntimeError("PayPal could not read the captured payment.")
+    amount = capture.get("amount") or {}
+    return {"status": capture.get("status"),
+            "amount": {"currency_code": amount.get("currency_code"), "value": amount.get("value")}
+            if isinstance(amount, dict) else None}
+
+
+def refund_capture(env, capture_id, amount, request_id, note):
+    """Issue one idempotent Sandbox refund for a captured PayPal payment."""
+    if not request_id:
+        raise ValueError("A saved refund request ID is required.")
+    token = _get_token(env)
+    path = f"/v2/payments/captures/{urllib.parse.quote(str(capture_id), safe='')}/refund"
+    status, refund = _call("POST", path, token=token, body={
+        "amount": {"currency_code": "USD", "value": _usd_amount(amount)},
+        "note_to_payer": str(note)[:255],
+    }, headers={"PayPal-Request-Id": request_id})
+    if status not in (200, 201):
+        raise RuntimeError("PayPal could not refund the captured payment.")
+    return {"refund_id": refund.get("id"), "status": refund.get("status")}
+
+
+def record_external_refund(env, invoice_id, amount):
+    """Record a refund of a manager-entered external Sandbox payment."""
+    token = _get_token(env)
+    path = f"/v2/invoicing/invoices/{urllib.parse.quote(str(invoice_id), safe='')}/refunds"
+    status, refund = _call("POST", path, token=token, body={
+        "method": "OTHER",
+        "amount": {"currency_code": "USD", "value": _usd_amount(amount)},
+    })
+    if status != 200:
+        raise RuntimeError("PayPal could not record the external refund.")
+    return {"refund_id": refund.get("refund_id")}
 
 
 def send_reminder(env, invoice_id, subject, note):

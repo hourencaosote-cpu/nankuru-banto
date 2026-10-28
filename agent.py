@@ -21,6 +21,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from contextvars import ContextVar
 from datetime import date, datetime
 
@@ -72,7 +73,7 @@ SYSTEM_PROMPT = """あなたは、台風の多い地域にある小さな宿の�
 - 承認待ちリストにすでに延泊の提案がある客には、新しい延泊を提案しない（list_open_invoices で確認する）。
 - 延泊の請求書を下書き・送付済みの客の便が、公式情報で再開していたら、propose_invoice_cancellation に宿泊客ID（guest_id）を渡して請求書の取り消しを提案する。
   案内文には、便が再開したので延泊は不要になったこと、請求書は取り消すので支払いは不要であることを、宿泊客の言語で丁寧に書く（金額は書かない）。
-  すでに支払われていたら取り消しは提案せず、notify_staff でスタッフに知らせる（返金はスタッフが判断する）。
+  すでに支払われていたら取り消しではなく、propose_refund で返金を提案する（返金額はシステムが計算するので、案内文に金額は書かない）。
 - 送付済みの請求書がある客は check_invoice_payment で支払い状況を確認し、まだ支払われておらず便も欠航のままなら、propose_payment_reminder で催促を提案する（1つの請求書に1回まで）。
   催促の案内文は宿泊客の言語で丁寧に書き、急かしすぎない（金額は書かない。支払いで延泊が確定することだけ伝える）。
 - 提案が却下されたら、その理由に従って対応を変える（例：OTA予約の客はスタッフへの連絡に切り替える）。
@@ -152,6 +153,19 @@ TOOLS = [
     {
         "name": "propose_payment_reminder",
         "description": "送付済みでまだ支払われていない延泊の請求書について、PayPal から催促を送る提案を承認待ちリストに入れる。実行はされず、スタッフが承認するまで何も起きない。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "guest_id": {"type": "string"},
+                "reason": {"type": "string", "description": "スタッフ向け英語1〜2文"},
+                "message_draft": {"type": "string", "description": "宿泊客の言語で書いた丁寧な案内文"},
+            },
+            "required": ["guest_id", "reason", "message_draft"],
+        },
+    },
+    {
+        "name": "propose_refund",
+        "description": "便の再開などで不要になった、すでに支払われた延泊について、返金の提案を承認待ちリストに入れる。返金額はシステムが計算する。実行はされず、スタッフが承認するまで何も起きない。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -285,6 +299,60 @@ def tool_propose_payment_reminder(args):
             "status": "スタッフの承認待ち（まだ何も実行されていません）"}
 
 
+def tool_propose_refund(args):
+    queue = _approvals()
+    guest_id = args.get("guest_id", "")
+    guest = _find_guest(guest_id)
+    extensions = [item for item in queue if item.get("type") == "extension"
+                  and item.get("guest_id") == guest_id]
+    extension = extensions[-1] if extensions else None
+    reasons = []
+    if guest is None:
+        reasons.append("その宿泊客IDは存在しません。")
+    if extension is None:
+        reasons.append("その客の延泊提案は存在しません。")
+    elif extension.get("status") in {"pending", "approved", "sent"}:
+        reasons.append("未払いです。返金ではなく propose_invoice_cancellation を使ってください。")
+    elif extension.get("status") != "confirmed":
+        reasons.append("支払い済みの延泊だけ返金を提案できます。")
+    flight_data = _flights()
+    flight_number = guest.get("departure_flight") if guest else None
+    flight = flight_data.get("flights", {}).get(flight_number, {})
+    if guest and flight.get("status") == "cancelled":
+        reasons.append("公式情報ではまだ欠航です。返金は提案できません。")
+    elif guest and not flight.get("status"):
+        reasons.append("公式情報で便の再開が確認できません。返金は提案できません。")
+    if extension and any(item.get("type") == "refund"
+                         and item.get("proposal_id") == extension["id"]
+                         and item.get("status") in {"pending", "done"} for item in queue):
+        reasons.append("この延泊には返金提案がすでにあります。1つの延泊に返金は1回までです。")
+    draft = str(args.get("message_draft") or "")
+    if not draft.strip():
+        reasons.append("宿泊客への案内文の下書きが必要です。")
+    if guest and guest.get("language") == "Korean" and re.search(r"[\u3400-\u4DBF\u4E00-\u9FFF]", draft):
+        reasons.append("韓国語の案内文に漢字が含まれています。ハングルだけで書き直して、もう一度 propose_refund を呼んでください。")
+    if reasons:
+        log_decision("gate", "rejected_refund", {"guest_id": guest_id,
+                     "proposal_id": extension.get("id") if extension else None, "reasons": reasons})
+        return {"accepted": False, "reasons": reasons}
+
+    item = {
+        "id": f"P{len(queue) + 1:03d}", "type": "refund",
+        "proposal_id": extension["id"], "guest_id": guest_id,
+        "guest_name": guest["name"], "language": guest["language"],
+        "amount_usd": extension["amount_usd"],
+        "reason": args.get("reason", ""), "message_draft": draft,
+        "evidence": f"{flight_number}: {flight.get('status')} / {flight.get('official_source')} (as of {flight_data.get('as_of')})",
+        "refund_request_id": f"nankuru-refund-{uuid.uuid4()}",
+        "status": "pending", "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    queue.append(item)
+    write_json(approvals_path(), queue)
+    log_decision("ai", "proposed_refund", item)
+    return {"accepted": True, "proposal_id": item["id"], "amount_usd": item["amount_usd"],
+            "status": "スタッフの承認待ち（まだ何も実行されていません）"}
+
+
 def _policy_discount():
     """台風割引の割合は宿のルール（data/guests.json の hotel_policy）で決まる。AIは変えられない。"""
     value = int(_guests().get("hotel_policy", {}).get("typhoon_discount_percent", 0))
@@ -397,7 +465,7 @@ def tool_propose_invoice_cancellation(args):
     if extension is None:
         reasons.append("その客の延泊提案は存在しません。")
     elif extension.get("status") == "confirmed":
-        reasons.append("この請求書はすでに支払われています。取り消しはできません。返金はスタッフが判断するので notify_staff で知らせてください。")
+        reasons.append("この請求書はすでに支払われています。取り消しではなく propose_refund で返金を提案してください。")
     elif extension.get("status") not in {"approved", "sent"}:
         reasons.append("請求書下書きか送付済みの延泊だけ取り消しを提案できます。")
     flight_data = _flights()
@@ -475,6 +543,7 @@ TOOL_FUNCTIONS = {
     "notify_staff": tool_notify_staff,
     "propose_invoice_cancellation": tool_propose_invoice_cancellation,
     "propose_payment_reminder": tool_propose_payment_reminder,
+    "propose_refund": tool_propose_refund,
 }
 
 
@@ -725,9 +794,11 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
     state = _new_run_state(env, web)
     before_counts = _item_counts() if record and recording_required_type == "extension" else None
     before_cancellations = (sum(item.get("type") == "invoice_cancellation" for item in _approvals())
-                            if record and recording_required_type in {"invoice_cancellation", "cancellation_and_reminder"} else None)
+                            if record and recording_required_type in {"invoice_cancellation", "cancellation_and_reminder", "cancellation_reminder_refund"} else None)
     before_reminders = (sum(item.get("type") == "payment_reminder" for item in _approvals())
-                        if record and recording_required_type == "cancellation_and_reminder" else None)
+                        if record and recording_required_type in {"cancellation_and_reminder", "cancellation_reminder_refund"} else None)
+    before_refunds = (sum(item.get("type") == "refund" for item in _approvals())
+                      if record and recording_required_type == "cancellation_reminder_refund" else None)
     before_items = read_json(approvals_path(), []) if mode == "auto" and web else None
     before_log_lines = _log_line_count() if before_items is not None else None
     token = _run_state.set(state)
@@ -794,18 +865,21 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
             run_agent(replay_model, env)
             return "replay"
         if record:
-            if recording_required_type in {"invoice_cancellation", "cancellation_and_reminder"}:
+            if recording_required_type in {"invoice_cancellation", "cancellation_and_reminder", "cancellation_reminder_refund"}:
                 proposals = sum(item.get("type") == "invoice_cancellation" for item in _approvals()) - before_cancellations
                 reminders = (sum(item.get("type") == "payment_reminder" for item in _approvals()) - before_reminders
                              if before_reminders is not None else None)
+                refunds = (sum(item.get("type") == "refund" for item in _approvals()) - before_refunds
+                           if before_refunds is not None else None)
                 staff_notes = 0
             else:
                 after_counts = _item_counts()
                 proposals = after_counts[0] - before_counts[0]
                 staff_notes = after_counts[1] - before_counts[1]
-            if proposals <= 0 or (before_reminders is not None and reminders <= 0):
+            if proposals <= 0 or (before_reminders is not None and reminders <= 0) or (before_refunds is not None and refunds <= 0):
                 state["responses"].clear()
-                kind = ("取り消し提案と催促提案" if before_reminders is not None else
+                kind = ("取り消し・催促・返金提案" if before_refunds is not None else
+                        "取り消し提案と催促提案" if before_reminders is not None else
                         "取り消し提案" if recording_required_type == "invoice_cancellation" else "延泊提案")
                 reason = f"記録を保存しませんでした：この実行で{kind}が作成されませんでした。"
                 print(reason)
@@ -813,7 +887,9 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
             _save_recording(state["responses"], env, path=recording_path)
             elapsed = time.monotonic() - state["started"]
             gemini_calls = state["http_calls"] or state["model_calls"]
-            if recording_required_type == "cancellation_and_reminder":
+            if recording_required_type == "cancellation_reminder_refund":
+                summary = f"取り消し提案 {proposals}件、催促提案 {reminders}件、返金提案 {refunds}件"
+            elif recording_required_type == "cancellation_and_reminder":
                 summary = f"取り消し提案 {proposals}件、催促提案 {reminders}件"
             else:
                 label = "取り消し提案" if recording_required_type == "invoice_cancellation" else "延泊提案"
@@ -846,7 +922,7 @@ def _run_agent(call_model, env):
     if notice_scenario() == "update":
         task = ("公式の運航情報が更新されました。承認待ちリストの延泊と請求書の状態を確認し、"
                 "宿泊客全員の便を再確認してください。再開した便の未払い請求書には取り消しを提案し、"
-                "支払い済みならスタッフに知らせてください。SNSは判断に使わないでください。")
+                "支払い済みなら返金を提案してください。SNSは判断に使わないでください。")
     else:
         task = ("台風が接近しています。宿泊客全員について、帰りの便の公式情報を確認し、"
                 "欠航で帰れない客には延泊を提案してください。SNSの情報も念のため確認してください。")

@@ -29,7 +29,7 @@ The builder has worked at hotels in Okinawa and Hokkaido, and has been on shift 
 3. **Code-enforced safety rules filter every proposal.** The AI cannot change them (see below).
 4. **A manager approves** each proposal with one click on the dashboard.
 5. **PayPal closes the loop.** Approval creates and sends a PayPal invoice. When the guest pays, a PayPal webhook confirms the extension within seconds, without a manager pressing a button.
-6. **Plans change.** If an official update restores a guest's flight, the agent proposes cancelling the unpaid invoice. When the manager approves, PayPal cancels it and tells the guest.
+6. **Plans change.** If an official update restores a guest's flight, the agent proposes cancelling an unpaid invoice or refunding a paid extension. After manager approval, PayPal carries out the cancellation or refund.
 7. **Nudges, not nags.** For unpaid invoices, the AI proposes a reminder. PayPal sends it only after manager approval, at most once per invoice.
 
 ```mermaid
@@ -59,6 +59,7 @@ The AI can **look things up, propose, and notify staff — nothing else.** It ha
 | **Direct bookings only** — OTA bookings go to staff | The inn cannot invoice a guest who paid an online travel agency |
 | **Extension-room inventory** cannot be exceeded | No overbooking |
 | Cancellations only for unpaid invoices, after an official restore | Paid invoices are never touched by the agent; refunds stay with staff |
+| Refunds only after an official restore, amount set by code, idempotent | The agent can't choose how much to refund, and a retried approval can't refund twice |
 | Read-only PayPal access for the agent | The agent can check an invoice but has no PayPal tool that writes |
 | No duplicate proposals or staff notes | Re-running the AI is safe |
 | **Allowlisted tools only**, max 20 steps | Unknown tools are blocked and logged |
@@ -77,6 +78,9 @@ All calls use the **PayPal REST API in the Sandbox** ([`paypal_tools.py`](paypal
 - `DELETE /v2/invoicing/invoices/{id}` — delete an unsent invoice draft after manager approval
 - `POST /v2/invoicing/invoices/{id}/payments` — **Sandbox demo only:** a manager-pressed button that records an external payment, for judges who don't want to log in as the guest. The guest-pays-in-PayPal path is the primary flow.
 - `GET /v2/invoicing/invoices/{id}` — check status; `PAID` confirms the extension
+- `GET /v2/payments/captures/{id}` — confirm a PayPal payment is captured before refunding
+- `POST /v2/payments/captures/{id}/refund` — refund a PayPal capture after manager approval, using `PayPal-Request-Id` to prevent a duplicate refund on retry
+- `POST /v2/invoicing/invoices/{id}/refunds` — record a refund of a Sandbox external payment entered with **Record sandbox payment**
 - `POST /v1/notifications/verify-webhook-signature` — verify that a payment notification came from PayPal
 - `INVOICING.INVOICE.PAID` webhook — after verification, fetch the invoice with `GET /v2/invoicing/invoices/{id}` and confirm the extension only when PayPal reports it paid
 - `INVOICING.INVOICE.CANCELLED` webhook — after verification, fetch the invoice and reflect PayPal's confirmed cancellation
@@ -132,11 +136,13 @@ To show a restored flight, **Approve & send PayPal invoice** for Kim Minji, then
 
 To show a reminder, send Emily Carter's invoice and leave it unpaid. After the official update, run the AI check, review the reminder proposal, then click **Approve & send PayPal reminder**. The app checks PayPal again before sending; an already paid invoice receives no reminder.
 
+To show a refund, send Ken Tanaka's invoice and record its Sandbox payment before the official update. The AI then proposes a full refund for the restored flight; only the manager's approval issues or records it in PayPal.
+
 A terminal-only version is also available: `python3 agent.py --reset`, `python3 approve.py`, `python3 check_payments.py`.
 
 `AI_MODE` defaults to `auto` (try Gemini, then a recorded demo if available); set it to `live` or `replay` to choose one source. After a successful live run, `python3 agent.py --reset --record` saves Gemini responses in `data/replay/gemini_run.json` for demo replay.
 
-The updated notice uses a separate optional replay file, `data/replay/gemini_update_run.json`. A local operator can create it with `python3 record_demo.py`; this helper resets the CLI demo state and sends real Sandbox invoices for Kim and Emily, so run it only when ready to record the cancellation and reminder scenarios.
+The updated notice uses a separate optional replay file, `data/replay/gemini_update_run.json`. A local operator can create it with `python3 record_demo.py`; this helper resets the CLI demo state, sends real Sandbox invoices for Kim, Emily and Ken, and records Ken's payment. Run it only when ready to record the cancellation, reminder and refund scenarios.
 
 ### Tests
 
@@ -171,6 +177,7 @@ tests/              Offline tests
 - The demo assumes the inn knows each guest's departure flight. Many small inns don't collect it yet — next step: the agent drafts a message asking the guest for their flight (see Roadmap).
 - Guests who booked through an online travel agency can't be invoiced by the inn, so the agent routes them to staff instead of charging them.
 - PayPal runs in the Sandbox only; flight data is fictional. A production version would read a live official flight-status feed.
+- PayPal invoices don't show refunds made through the Payments API, so the dashboard tracks refunds itself.
 - The free hosting plan sleeps when idle and keeps demo data in a private per-visitor workspace that resets after 24 hours.
 
 ## Notes
@@ -187,7 +194,6 @@ tests/              Offline tests
 - Ask guests for their departure flight when the inn doesn't know it (drafted in the guest's language, sent by staff)
 - OTA guests: a drafted message explaining how to extend through their travel site
 - Heavy-snow mode (Hokkaido airports)
-- Refunds for already-paid extensions
 - Live official flight-status feeds
 
 ## License

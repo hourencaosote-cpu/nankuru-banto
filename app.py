@@ -16,8 +16,9 @@ from flask import Flask, abort, flash, g, redirect, render_template, request, se
 from werkzeug.exceptions import RequestEntityTooLarge
 
 import agent
-from approve import (approve_cancellation, approve_extension, approve_reminder, defer_item,
-                     reject_cancellation, reject_extension, reject_reminder, resolve_staff_note)
+from approve import (approve_cancellation, approve_extension, approve_refund, approve_reminder,
+                     defer_item, reject_cancellation, reject_extension, reject_refund,
+                     reject_reminder, resolve_staff_note)
 from check_payments import check_payments as check_payments_action, confirm_invoice_if_paid
 from common import (
     DATA_DIR, approvals_path, flights_path, load_env, log_decision, log_path, notice_scenario,
@@ -59,6 +60,7 @@ STATUS_LABELS = {
     "approved": "Invoice draft",
     "sent": "Invoice sent",
     "confirmed": "Paid · extension confirmed",
+    "refunded": "Refunded · stay not needed",
     "cancelled": "Invoice cancelled · stay not needed",
     "done": "Cancelled in PayPal",
     "superseded": "Already paid — not cancelled",
@@ -69,6 +71,13 @@ STATUS_LABELS = {
 
 ACTION_LABELS = {
     "proposed_extension": "Stay extension proposed",
+    "proposed_refund": "Refund proposed",
+    "rejected_refund": "Safety gate blocked a refund",
+    "approved_refund": "Manager approved — PayPal refund issued",
+    "refund_skipped_not_refundable": "No refund: payment already refunded",
+    "refund_failed": "Refund failed safely",
+    "manager_rejected_refund": "Manager rejected a refund",
+    "refund_blocked_notice_changed": "Refund blocked: flight no longer restored",
     "proposed_cancellation": "Invoice cancellation proposed",
     "proposed_reminder": "Payment reminder proposed",
     "rejected_reminder": "Safety gate blocked a reminder",
@@ -123,6 +132,7 @@ GATE_RULES = [
     "Guest message draft is required",
     "Cancellations only for unpaid invoices whose departure is officially restored",
     "Reminders only for unpaid invoices, once per invoice, while the flight is still cancelled",
+    "Refunds only for paid extensions whose departure is officially restored; the amount is set by code",
 ]
 
 
@@ -456,7 +466,12 @@ def _gate_reason(reason):
         ("案内文の下書き", "A guest message draft is required."),
         ("すでに承認待ち", "A proposal already exists for this guest."),
         ("延泊提案は存在しません", "The guest has no stay-extension proposal."),
-        ("すでに支払われています", "The invoice has already been paid. Staff must decide on any refund."),
+        ("すでに支払われています", "The invoice has already been paid. Propose a refund instead of cancellation."),
+        ("未払いです。返金ではなく", "The invoice is unpaid. Propose invoice cancellation instead."),
+        ("支払い済みの延泊だけ", "Only paid stay extensions can be refunded."),
+        ("まだ欠航です。返金", "The official notice still shows a cancelled flight; no refund can be proposed."),
+        ("便の再開が確認できません。返金", "The official notice does not confirm the flight has resumed."),
+        ("この延泊には返金提案", "A refund has already been proposed for this stay extension."),
         ("請求書下書きか送付済み", "Only an invoice draft or an unpaid sent invoice can be cancelled."),
         ("まだ欠航", "The official notice still shows a cancelled flight."),
         ("便の再開が確認できません", "The official notice does not confirm the flight has resumed."),
@@ -496,6 +511,7 @@ def _tracker_data(guest_rows, approvals):
         "approved": ("Pending approval", "approved"),
         "sent": ("Invoice sent", "sent"),
         "confirmed": ("Paid · confirmed", "confirmed"),
+        "refunded": ("Refunded · stay not needed", "refunded"),
         "cancelled": ("Invoice cancelled", "cancelled"),
         "rejected": ("Rejected", "rejected"),
         "staff": ("Staff follow-up", "approved"),
@@ -519,7 +535,7 @@ def _tracker_data(guest_rows, approvals):
             "booking": "OTA" if guest.get("booking_channel") == "ota" else "Direct",
             "flight": f"{flight_number} · {flight_status.replace('_', ' ').capitalize()}",
             "proposalNights": extension.get("nights") if extension else None,
-            "amountUsd": float(extension.get("amount_usd") or 0) if extension and extension.get("status") != "cancelled" else 0.0,
+            "amountUsd": float(extension.get("amount_usd") or 0) if extension and extension.get("status") not in {"cancelled", "refunded"} else 0.0,
             "status": status,
             "statusStyle": status_style,
             "invoice": invoice_id[-6:] if invoice_id else "—",
@@ -599,7 +615,7 @@ def _log_view(entry, flights, guest_count, guest_names):
         }
 
     guest_id = detail.get("guest_id")
-    if entry.get("action") in {"rejected_proposal", "rejected_cancellation", "rejected_reminder"}:
+    if entry.get("action") in {"rejected_proposal", "rejected_cancellation", "rejected_reminder", "rejected_refund"}:
         subject = guest_names.get(guest_id) or guest_id or "System"
     else:
         subject = guest_names.get(guest_id) or detail.get("guest_name") or detail.get("id") or guest_id or "System"
@@ -682,11 +698,16 @@ def build_dashboard():
         for item in approvals
         if item.get("type") == "extension" and item.get("status") in {"approved", "sent"}
     )
+    refunded_total = sum(
+        float(item.get("amount_usd", 0))
+        for item in approvals
+        if item.get("type") == "extension" and item.get("status") == "refunded"
+    )
 
     gate_events = []
     seen_guests = set()
     for entry in reversed(log_entries[-80:]):
-        if entry.get("action") not in {"rejected_proposal", "rejected_cancellation", "rejected_reminder"}:
+        if entry.get("action") not in {"rejected_proposal", "rejected_cancellation", "rejected_reminder", "rejected_refund"}:
             continue
         detail = entry.get("detail", {})
         guest_id = detail.get("guest_id", "Unknown guest")
@@ -703,7 +724,7 @@ def build_dashboard():
         if len(gate_events) == 4:
             break
 
-    status_order = {"pending": 0, "approved": 1, "sent": 2, "confirmed": 3, "rejected": 4}
+    status_order = {"pending": 0, "approved": 1, "sent": 2, "confirmed": 3, "refunded": 4, "rejected": 5}
     proposals = sorted(
         [item for item in approvals if item.get("type") == "extension"],
         key=lambda item: (status_order.get(item.get("status"), 9), item.get("created_at", "")),
@@ -718,6 +739,10 @@ def build_dashboard():
     )
     reminders = sorted(
         [item for item in approvals if item.get("type") == "payment_reminder"],
+        key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
+    )
+    refunds = sorted(
+        [item for item in approvals if item.get("type") == "refund"],
         key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
     )
 
@@ -735,12 +760,14 @@ def build_dashboard():
             "room_capacity": room_capacity,
             "paid_revenue": paid_revenue,
             "unpaid_revenue": unpaid_revenue,
+            "refunded_total": refunded_total,
         },
         "guests": guest_rows,
         "proposals": proposals,
         "staff_notes": staff_notes,
         "cancellations": cancellations,
         "reminders": reminders,
+        "refunds": refunds,
         "notice_updated": notice_scenario() == "update",
         "gate_events": gate_events,
         "gate_rules": GATE_RULES,
@@ -1128,6 +1155,36 @@ def reject_reminder_action(item_id):
         flash(str(error), "error")
     else:
         flash("Reminder proposal rejected. Nothing was sent.", "success")
+    return redirect(url_for("dashboard") + "#review-queue")
+
+
+@app.post("/refunds/<item_id>/approve")
+@workspace_action("approve_refund")
+def approve_refund_action(item_id):
+    try:
+        result = approve_refund(item_id)
+    except ValueError as error:
+        flash(str(error), "error")
+    except (RuntimeError, SystemExit, OSError) as error:
+        _record_web_failure("approve_refund", error)
+        flash("PayPal could not issue or record the refund. The saved statuses were not changed.", "error")
+    else:
+        if result["status"] == "superseded":
+            flash("The captured payment is no longer refundable. No refund was issued.", "info")
+        else:
+            flash("Approved. The PayPal sandbox refund was issued or recorded.", "success")
+    return redirect(url_for("dashboard") + "#review-queue")
+
+
+@app.post("/refunds/<item_id>/reject")
+@workspace_action("reject_refund")
+def reject_refund_action(item_id):
+    try:
+        reject_refund(item_id)
+    except ValueError as error:
+        flash(str(error), "error")
+    else:
+        flash("Refund proposal rejected. No refund was issued.", "success")
     return redirect(url_for("dashboard") + "#review-queue")
 
 

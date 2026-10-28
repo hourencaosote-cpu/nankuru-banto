@@ -79,14 +79,19 @@ class CancellationTests(unittest.TestCase):
             token = state["csrf_token"]
         return self.client.post(path, data={"csrf_token": token})
 
-    def test_update_data_only_changes_kim_and_as_of(self):
+    def test_update_data_only_changes_kim_ken_and_as_of(self):
         initial = common.read_json(str(self.data / "flights.json"), {})
         updated = common.read_json(str(self.data / "flights_update.json"), {})
         self.assertEqual(updated["as_of"], "2026-08-06 23:30")
         self.assertEqual(updated["flights"]["DEMO-202"]["status"], "on_time")
         self.assertIsNone(updated["flights"]["DEMO-202"]["next_available_date"])
-        self.assertEqual({k: v for k, v in updated["flights"].items() if k != "DEMO-202"},
-                         {k: v for k, v in initial["flights"].items() if k != "DEMO-202"})
+        self.assertEqual(updated["flights"]["DEMO-303"]["status"], "on_time")
+        self.assertIsNone(updated["flights"]["DEMO-303"]["next_available_date"])
+        self.assertEqual(updated["flights"]["DEMO-303"]["official_source"],
+                         "Demo Airlines official update (fictional): service restored")
+        changed = {"DEMO-202", "DEMO-303"}
+        self.assertEqual({k: v for k, v in updated["flights"].items() if k not in changed},
+                         {k: v for k, v in initial["flights"].items() if k not in changed})
         self.assertEqual(updated["unverified_social_posts"], initial["unverified_social_posts"])
 
     def test_gate_accepts_restored_sent_invoice_and_private_list(self):
@@ -173,7 +178,7 @@ class CancellationTests(unittest.TestCase):
             result = agent.tool_propose_invoice_cancellation(args)
             self.assertFalse(result["accepted"])
             if status == "confirmed":
-                self.assertIn("notify_staff", result["reasons"][0])
+                self.assertIn("propose_refund", result["reasons"][0])
         self.save([self.extension(), self.cancellation()])
         self.assertFalse(agent.tool_propose_invoice_cancellation(args)["accepted"])
         self.save([self.extension()])
