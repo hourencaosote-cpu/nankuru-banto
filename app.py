@@ -133,6 +133,7 @@ GATE_RULES = [
     "Cancellations only for unpaid invoices whose departure is officially restored",
     "Reminders only for unpaid invoices, once per invoice, while the flight is still cancelled",
     "Refunds only for paid extensions whose departure is officially restored; the amount is set by code",
+    "No proposal without an official next date, or when more than 3 nights are needed",
 ]
 
 
@@ -463,6 +464,8 @@ def _gate_reason(reason):
         ("宿泊客IDは存在しません", "The guest ID does not exist."),
         ("延泊は1〜", "The requested stay is outside the 1–3 night limit."),
         ("必要なのは", "The request exceeds the nights needed for the next available flight."),
+        ("次に乗れる日が公式に出ていないため", "No official next departure date yet, so the nights can't be set. Sent to staff."),
+        ("必要な泊数が", "The guest needs more nights than the 3-night limit. Sent to staff."),
         ("案内文の下書き", "A guest message draft is required."),
         ("すでに承認待ち", "A proposal already exists for this guest."),
         ("延泊提案は存在しません", "The guest has no stay-extension proposal."),
@@ -505,6 +508,13 @@ def _guest_response(guest, items, flight_status):
     return "No action needed", "neutral"
 
 
+def _flight_status_label(status):
+    return {
+        "conditional": "Conditional (may turn back)",
+        "may_be_affected": "May be affected",
+    }.get(status, status.replace("_", " ").capitalize())
+
+
 def _tracker_data(guest_rows, approvals):
     tracker_statuses = {
         "pending": ("Pending approval", "pending"),
@@ -533,7 +543,7 @@ def _tracker_data(guest_rows, approvals):
             "guest": guest.get("name", ""),
             "room": guest.get("room", ""),
             "booking": "OTA" if guest.get("booking_channel") == "ota" else "Direct",
-            "flight": f"{flight_number} · {flight_status.replace('_', ' ').capitalize()}",
+            "flight": f"{flight_number} · {_flight_status_label(flight_status)}",
             "proposalNights": extension.get("nights") if extension else None,
             "amountUsd": float(extension.get("amount_usd") or 0) if extension and extension.get("status") not in {"cancelled", "refunded"} else 0.0,
             "status": status,
@@ -592,7 +602,9 @@ def _log_view(entry, flights, guest_count, guest_names):
         args = detail.get("args") if isinstance(detail.get("args"), dict) else {}
         if name == "get_flight_status":
             flight_number = args.get("flight", "Unknown flight")
-            status = flights.get(flight_number, {}).get("status", "not found").replace("_", " ")
+            raw_status = flights.get(flight_number, {}).get("status", "not found")
+            status = (_flight_status_label(raw_status) if raw_status in {"conditional", "may_be_affected"}
+                      else raw_status.replace("_", " "))
             label = f"Checked official flight {flight_number} → {status}"
             subject = "Official notice"
         elif name == "get_social_posts":
@@ -673,6 +685,7 @@ def build_dashboard():
             {
                 **guest,
                 "flight_status": status,
+                "flight_status_label": _flight_status_label(status),
                 "flight_date": flight.get("date", ""),
                 "official_source": flight.get("official_source", ""),
                 "response": response,

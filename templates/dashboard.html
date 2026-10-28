@@ -123,7 +123,7 @@
                 <div class="guest-title"><strong>{{ guest.name }}</strong><span>Room {{ guest.room }}</span></div>
                 <div class="flight-line">
                   <span>{{ guest.departure_flight }}</span>
-                  <span class="flight-status flight-{{ guest.flight_status }}">{{ guest.flight_status|replace('_', ' ')|capitalize }}</span>
+                  <span class="flight-status flight-{{ guest.flight_status }}">{{ guest.flight_status_label }}</span>
                 </div>
                 <p class="response-label response-{{ guest.response_style }}">{{ guest.response }}</p>
               </div>

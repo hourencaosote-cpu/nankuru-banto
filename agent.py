@@ -70,6 +70,10 @@ SYSTEM_PROMPT = """あなたは、台風の多い地域にある小さな宿の�
 - 提案の理由は「便が欠航し、次に乗れる便は○月○日」という事実に沿って書く（「○日まで欠航」のような不正確な言い方をしない）。
 - 割引率はあなたが決めない（宿のルールで決まっている）。
 - 延泊の泊数は、帰りの便の次の空き日までに必要な分だけにする。
+- 欠航でも、次に乗れる日が公式に出ていない場合は、泊数を推測せず notify_staff でスタッフに知らせる。
+- 必要な泊数が上限（3泊）を超える場合は延泊を提案せず、notify_staff でスタッフに知らせる。
+- 運航状況が「条件付き運航（conditional）」「影響の可能性（may_be_affected）」など、欠航と確定していない場合は延泊を提案しない。
+- すでに延泊を提案・請求した客の、次に乗れる日が変わって必要な泊数が変わった（延びた・早まった）場合は、新しい提案はせず notify_staff でスタッフに知らせる（泊数の変更や一部返金はスタッフが判断する）。
 - 承認待ちリストにすでに延泊の提案がある客には、新しい延泊を提案しない（list_open_invoices で確認する）。
 - 延泊の請求書を下書き・送付済みの客の便が、公式情報で再開していたら、propose_invoice_cancellation に宿泊客ID（guest_id）を渡して請求書の取り消しを提案する。
   案内文には、便が再開したので延泊は不要になったこと、請求書は取り消すので支払いは不要であることを、宿泊客の言語で丁寧に書く（金額は書かない）。
@@ -401,8 +405,12 @@ def tool_propose_stay_extension(args):
         rejections.append("OTA経由の予約は、宿からPayPalで請求できません。notify_staff でスタッフに知らせてください。")
     if not 1 <= nights <= MAX_NIGHTS:
         rejections.append(f"延泊は1〜{MAX_NIGHTS}泊までです。")
+    if flight.get("status") == "cancelled" and not flight.get("next_available_date"):
+        rejections.append("次に乗れる日が公式に出ていないため、泊数を決められません。notify_staff でスタッフに知らせてください。")
     if flight.get("next_available_date"):
         need = (date.fromisoformat(flight["next_available_date"]) - date.fromisoformat(guest["checkout_date"])).days
+        if flight.get("status") == "cancelled" and need > MAX_NIGHTS:
+            rejections.append(f"必要な泊数が{need}泊で、上限の{MAX_NIGHTS}泊を超えます。延泊は提案せず notify_staff でスタッフに知らせてください。")
         if nights > need:
             rejections.append(f"次の便に乗るために必要なのは{need}泊です。それを超える延泊は提案できません。")
     if not str(args.get("message_draft", "")).strip():

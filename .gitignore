@@ -6,3 +6,4 @@ logs/
 data/approvals.json
 data/archive/
 data/workspaces/
+eval_reports/

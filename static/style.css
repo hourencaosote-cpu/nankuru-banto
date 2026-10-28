@@ -277,6 +277,7 @@ h1, h2, h3, .metric-card strong, .price-block strong, .loading-card strong { fon
 .flight-status { padding: 2px 6px; border-radius: 999px; font-size: 0.62rem; font-weight: 800; letter-spacing: 0.04em; }
 .flight-cancelled { color: var(--red-700); background: var(--red-50); }
 .flight-on_time { color: var(--green-700); background: var(--green-50); }
+.flight-conditional, .flight-may_be_affected { color: var(--ink); background: var(--sand-100); }
 .response-label { margin: 8px 0 0; padding-left: 8px; color: var(--muted); border-left: 2px solid #cbd5d8; font-size: 0.71rem; font-weight: 650; }
 .response-pending, .response-warning { color: #7a5b17; border-color: #d1aa47; }
 .response-sent, .response-approved { color: var(--blue-700); border-color: #70a6c4; }
