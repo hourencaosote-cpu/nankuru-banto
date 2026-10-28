@@ -318,7 +318,7 @@
                 <div class="card-kicker"><span>{{ refund.id }}</span><span>{{ refund.language }}</span></div>
                 <h3>REFUND · {{ refund.guest_name }}</h3>
               </div>
-              <span class="status-badge status-{{ refund.status }}">{{ 'Refunded in PayPal' if refund.status == 'done' and refund.method == 'paypal' else 'Refund recorded in PayPal (sandbox external payment)' if refund.status == 'done' else 'Not refundable — already refunded' if refund.status == 'superseded' else status_labels.get(refund.status, refund.status|title) }}</span>
+              <span class="status-badge status-{{ refund.status }}">{{ 'Refund pending in PayPal' if refund.status == 'done' and refund.refund_status == 'PENDING' else 'Refunded in PayPal' if refund.status == 'done' and refund.method == 'paypal' else 'Refund recorded in PayPal (sandbox external payment)' if refund.status == 'done' else 'Not refundable — already refunded' if refund.status == 'superseded' else status_labels.get(refund.status, refund.status|title) }}</span>
             </header>
             <div class="price-block"><div><span>Full refund</span><strong>USD {{ refund.amount_usd|money }}</strong></div><p>USD {{ refund.amount_usd|money }} · full refund, set by code</p></div>
             <dl class="decision-details">

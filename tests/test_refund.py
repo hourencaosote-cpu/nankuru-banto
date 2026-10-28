@@ -136,7 +136,21 @@ class RefundTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in self.queue()], ["refunded", "done"])
         self.assertEqual(self.queue()[1]["refund_id"], "RF-1")
         self.assertEqual(self.queue()[1]["method"], "paypal")
+        self.assertEqual(self.queue()[1]["refund_status"], "COMPLETED")
         self.assertEqual(self.actions()[-1], "approved_refund")
+
+    def test_pending_refund_status_is_saved_and_shown(self):
+        self.update()
+        self.save([self.extension(), self.refund()])
+        with mock.patch.object(approve, "get_invoice_payment", return_value=self.payment()), \
+             mock.patch.object(approve, "get_capture", return_value=self.capture()), \
+             mock.patch.object(approve, "refund_capture", return_value={"refund_id": "RF-P", "status": "PENDING"}):
+            self.assertEqual(self.post("/refunds/P002/approve").status_code, 302)
+        saved = self.queue()
+        self.assertEqual([item["status"] for item in saved], ["refunded", "done"])
+        self.assertEqual(saved[1]["refund_status"], "PENDING")
+        self.assertEqual(saved[1]["refund_id"], "RF-P")
+        self.assertIn("Refund pending in PayPal", self.client.get("/").get_data(as_text=True))
 
     def test_external_payment_records_refund(self):
         self.update()
@@ -177,7 +191,7 @@ class RefundTests(unittest.TestCase):
         before = self.queue_path.read_bytes()
         with mock.patch.object(approve, "get_invoice_payment", return_value=self.payment()), \
              mock.patch.object(approve, "get_capture", return_value=self.capture()), \
-             mock.patch.object(approve, "refund_capture", side_effect=[RuntimeError("private"), {"refund_id": "RF-1"}]) as issue:
+             mock.patch.object(approve, "refund_capture", side_effect=[RuntimeError("private"), {"refund_id": "RF-1", "status": "COMPLETED"}]) as issue:
             with self.assertRaises(RuntimeError):
                 approve.approve_refund("P002", env={})
             self.assertEqual(self.queue_path.read_bytes(), before)
@@ -208,7 +222,7 @@ class RefundTests(unittest.TestCase):
         self.save([self.extension(), self.refund()])
         with mock.patch.object(approve, "get_invoice_payment", return_value=self.payment()), \
              mock.patch.object(approve, "get_capture", return_value=self.capture()), \
-             mock.patch.object(approve, "refund_capture", return_value={"refund_id": "RF-1"}):
+             mock.patch.object(approve, "refund_capture", return_value={"refund_id": "RF-1", "status": "COMPLETED"}):
             self.assertEqual(self.post("/refunds/P002/approve").status_code, 302)
         self.assertEqual([item["status"] for item in self.queue()], ["refunded", "done"])
         self.assertIn("Refunded in PayPal", self.client.get("/").get_data(as_text=True))
@@ -235,6 +249,10 @@ class RefundTests(unittest.TestCase):
                                                        "note_to_payer": "x" * 255})
                 self.assertEqual(call.call_args.kwargs["headers"], {"PayPal-Request-Id": "stable-id"})
         with mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
+             mock.patch.object(paypal_tools, "_call", return_value=(201, {"id": "RF-P", "status": "PENDING"})):
+            self.assertEqual(paypal_tools.refund_capture({}, "CAP-1", 144, "stable-id", "note"),
+                             {"refund_id": "RF-P", "status": "PENDING"})
+        with mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
              mock.patch.object(paypal_tools, "_call", return_value=(200, {"refund_id": "RF-2"})) as call:
             self.assertEqual(paypal_tools.record_external_refund({}, "INV-1", 144), {"refund_id": "RF-2"})
             self.assertEqual(call.call_args.args, ("POST", "/v2/invoicing/invoices/INV-1/refunds"))
@@ -245,6 +263,35 @@ class RefundTests(unittest.TestCase):
                 paypal_tools.refund_capture({}, "CAP-1", 144, "stable-id", "note")
             with self.assertRaises(RuntimeError):
                 paypal_tools.record_external_refund({}, "INV-1", 144)
+        for body_status in ("FAILED", "CANCELLED", None):
+            with self.subTest(status=body_status), \
+                 mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
+                 mock.patch.object(paypal_tools, "_call", return_value=(201, {"status": body_status})):
+                with self.assertRaises(RuntimeError):
+                    paypal_tools.refund_capture({}, "CAP-1", 144, "stable-id", "note")
+
+    def test_failed_paypal_response_keeps_pending_for_same_id_retry(self):
+        self.update()
+        self.save([self.extension(), self.refund()])
+        before = self.queue_path.read_bytes()
+        with mock.patch.object(approve, "get_invoice_payment", return_value=self.payment()), \
+             mock.patch.object(approve, "get_capture", return_value=self.capture()), \
+             mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
+             mock.patch.object(paypal_tools, "_call", side_effect=[
+                 (201, {"id": "RF-X", "status": "FAILED"}),
+                 (200, {"id": "RF-Y", "status": "COMPLETED"}),
+             ]) as call:
+            with self.assertRaises(RuntimeError):
+                approve.approve_refund("P002", env={})
+            self.assertEqual(self.queue_path.read_bytes(), before)
+            self.assertEqual(self.actions()[-1], "refund_failed")
+            approve.approve_refund("P002", env={})
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(call.call_args_list[0].kwargs["headers"],
+                         call.call_args_list[1].kwargs["headers"])
+        self.assertEqual(call.call_args_list[0].kwargs["headers"],
+                         {"PayPal-Request-Id": "nankuru-refund-fixed-id"})
+        self.assertEqual([item["status"] for item in self.queue()], ["refunded", "done"])
 
     def test_call_merges_request_id_header(self):
         response = mock.MagicMock()

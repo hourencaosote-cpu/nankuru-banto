@@ -180,7 +180,7 @@ def refund_capture(env, capture_id, amount, request_id, note):
         "amount": {"currency_code": "USD", "value": _usd_amount(amount)},
         "note_to_payer": str(note)[:255],
     }, headers={"PayPal-Request-Id": request_id})
-    if status not in (200, 201):
+    if status not in (200, 201) or refund.get("status") not in ("COMPLETED", "PENDING"):
         raise RuntimeError("PayPal could not refund the captured payment.")
     return {"refund_id": refund.get("id"), "status": refund.get("status")}
 

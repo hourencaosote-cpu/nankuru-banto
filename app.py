@@ -1171,6 +1171,8 @@ def approve_refund_action(item_id):
     else:
         if result["status"] == "superseded":
             flash("The captured payment is no longer refundable. No refund was issued.", "info")
+        elif result["item"].get("refund_status") == "PENDING":
+            flash("Refund pending in PayPal.", "info")
         else:
             flash("Approved. The PayPal sandbox refund was issued or recorded.", "success")
     return redirect(url_for("dashboard") + "#review-queue")

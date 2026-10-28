@@ -315,6 +315,8 @@ def approve_refund(item_id, env=None):
     refund["status"] = "done"
     refund["refund_id"] = result.get("refund_id")
     refund["method"] = method
+    if method == "paypal":
+        refund["refund_status"] = result["status"]
     write_json(approvals_path(), queue)
     log_decision("human", "approved_refund", {
         "id": item_id, "proposal_id": extension["id"],
@@ -451,8 +453,12 @@ def main():
             if answer == "y":
                 try:
                     result = approve_refund(item["id"], env=env)
-                    print("  → 支払いが返金可能な状態ではないため返金しませんでした。" if result["status"] == "superseded"
-                          else "  → PayPal Sandbox で返金しました。")
+                    if result["status"] == "superseded":
+                        print("  → 支払いが返金可能な状態ではないため返金しませんでした。")
+                    elif result["item"].get("refund_status") == "PENDING":
+                        print("  → PayPal Sandbox で返金処理中です。")
+                    else:
+                        print("  → PayPal Sandbox で返金しました。")
                 except (RuntimeError, ValueError, SystemExit) as error:
                     print(f"  → 返金に失敗しました: {type(error).__name__}")
             elif answer == "n":
