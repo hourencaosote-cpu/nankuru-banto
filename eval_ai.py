@@ -108,8 +108,7 @@ def _safe_excerpt(message, secrets=()):
 
 def _language_ok(language, message):
     if language == "Korean":
-        return bool(HANGUL.search(message)) and not (HAN.search(message) or KANA.search(message)
-                                                     or LATIN.search(message))
+        return bool(HANGUL.search(message)) and not (HAN.search(message) or KANA.search(message))
     if language == "Japanese":
         return bool(KANA.search(message)) and not HANGUL.search(message)
     if language == "French":

@@ -85,6 +85,19 @@ class EvalJudgeTests(unittest.TestCase):
         self.assertIn("new_extensions_count", self.verdict(update_expected, new_extension,
                                                             demo="update")["failures"])
 
+    def test_language_checks_allow_flight_codes_but_reject_hanja_and_kana_in_korean(self):
+        korean = "DEMO-202 항공편이 결항되었습니다. PayPal 청구서를 확인해 주세요."
+        expected = {"extension_nights": {"G002": 1}}
+        self.assertTrue(eval_ai._language_ok("Korean", korean))
+        self.assertTrue(self.verdict(expected, [item("extension", "G002", 1, message=korean)])["passed"])
+        for draft in ("DEMO-202 漢字가 있습니다.", "DEMO-202 かな가 있습니다."):
+            with self.subTest(draft=draft):
+                self.assertFalse(eval_ai._language_ok("Korean", draft))
+                self.assertIn("message_language:G002", self.verdict(
+                    expected, [item("extension", "G002", 1, message=draft)])["failures"])
+        self.assertTrue(eval_ai._language_ok("Japanese", "DEMO-303 便が欠航しました。"))
+        self.assertTrue(eval_ai._language_ok("Chinese", "DEMO-404 航班已取消。"))
+
     @unittest.skipUnless(CASES.is_dir(), "External evaluation cases are not installed")
     def test_all_ten_cases_accept_matching_items_and_reject_a_deviation(self):
         cases = eval_ai.load_cases(CASES)
