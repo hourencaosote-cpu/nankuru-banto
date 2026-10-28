@@ -226,7 +226,10 @@ def tool_check_invoice_payment(args):
     extension = _sent_extension(_approvals(), guest_id)
     if extension is None:
         return {"error": "この客に送付済みの延泊請求書はありません。"}
-    invoice = read_invoice(_paypal_env(), extension["invoice_id"])
+    try:
+        invoice = read_invoice(_paypal_env(), extension["invoice_id"])
+    except (RuntimeError, SystemExit, OSError):
+        return {"error": "PayPal could not be reached. Try again later."}
     return {"guest_id": guest_id, "paypal_status": invoice["status"],
             "due_amount": invoice["due_amount"],
             "viewed_by_recipient": invoice["viewed_by_recipient"]}
@@ -243,9 +246,13 @@ def tool_propose_payment_reminder(args):
     if extension is None:
         reasons.append("この客に送付済みの延泊請求書はありません。")
     else:
-        status = read_invoice(_paypal_env(), extension["invoice_id"])["status"]
-        if status not in {"SENT", "UNPAID"}:
-            reasons.append("PayPal で未払いの送付済み請求書と確認できません。催促は提案できません。")
+        try:
+            status = read_invoice(_paypal_env(), extension["invoice_id"])["status"]
+        except (RuntimeError, SystemExit, OSError):
+            reasons.append("PayPal で請求書の状態を確認できませんでした。")
+        else:
+            if status not in {"SENT", "UNPAID"}:
+                reasons.append("PayPal で未払いの送付済み請求書と確認できません。催促は提案できません。")
     flight_number = guest.get("departure_flight") if guest else None
     flight = _flights().get("flights", {}).get(flight_number, {})
     if guest and flight.get("status") != "cancelled":

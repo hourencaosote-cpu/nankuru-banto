@@ -463,6 +463,7 @@ def _gate_reason(reason):
         ("承認待ちの取り消し", "A cancellation proposal is already awaiting review."),
         ("送付済みの延泊請求書はありません", "The guest has no sent stay-extension invoice."),
         ("未払いの送付済み請求書と確認できません", "PayPal does not show an unpaid sent invoice."),
+        ("PayPal で請求書の状態を確認できませんでした", "PayPal invoice status could not be checked. Try again later."),
         ("便が再開しています", "The flight has resumed. Propose invoice cancellation instead."),
         ("この請求書への催促提案", "A reminder has already been proposed for this invoice."),
         ("漢字が含まれています", "The Korean guest message needs a Hangul-only rewrite."),

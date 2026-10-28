@@ -124,6 +124,42 @@ class ReminderTests(unittest.TestCase):
         self.save([])
         self.assertIn("error", agent.tool_check_invoice_payment({"guest_id": "G001"}))
 
+    def test_paypal_lookup_errors_return_safe_tool_results_and_gate_rejection(self):
+        self.save([self.extension()])
+        args = {"guest_id": "G001", "reason": "Still unpaid.", "message_draft": "Please pay."}
+        for error in (RuntimeError("private"), SystemExit("private"), OSError("private")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                agent, "read_invoice", side_effect=error
+            ) as read:
+                self.assertEqual(agent.run_tool("check_invoice_payment", {"guest_id": "G001"}),
+                                 {"error": "PayPal could not be reached. Try again later."})
+                result = agent.run_tool("propose_payment_reminder", args)
+                self.assertFalse(result["accepted"])
+                self.assertIn("PayPal で請求書の状態を確認できませんでした。", result["reasons"])
+                self.assertEqual(read.call_count, 2)
+            self.assertEqual(self.actions()[-1], "rejected_reminder")
+            self.assertEqual(len(self.queue()), 1)
+        self.assertNotIn("private", self.log_path.read_text(encoding="utf-8"))
+        self.assertIn("PayPal invoice status could not be checked. Try again later.",
+                      self.client.get("/").get_data(as_text=True))
+
+    def test_ai_run_continues_after_paypal_lookup_failure(self):
+        self.save([self.extension()])
+        calls = iter([
+            {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {
+                "name": "check_invoice_payment", "args": {"guest_id": "G001"}}}]}}]},
+            {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {
+                "name": "propose_payment_reminder", "args": {
+                    "guest_id": "G001", "reason": "Still unpaid.", "message_draft": "Please pay."}}}]}}]},
+            {"candidates": [{"content": {"role": "model", "parts": [{"text": "Finished safely."}]}}]},
+        ])
+        with mock.patch.object(agent, "read_invoice", side_effect=OSError("private")) as read:
+            agent.run_agent(lambda _env, _contents: next(calls), {})
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(len(self.queue()), 1)
+        self.assertIn("finished", self.actions())
+        self.assertIn("rejected_reminder", self.actions())
+
     def test_reminder_gate_accepts_unpaid_and_rejects_duplicate(self):
         self.save([self.extension()])
         args = {"guest_id": "G001", "reason": "Still unpaid.",
