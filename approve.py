@@ -14,7 +14,7 @@ import common
 from common import approvals_path, flights_path, load_env, log_decision, read_json, write_json
 from check_payments import PAID, confirm_invoice_if_paid
 from paypal_tools import (cancel_invoice, create_extension_invoice, delete_invoice_draft,
-                          get_invoice_status, send_invoice)
+                          get_invoice_status, read_invoice, send_invoice, send_reminder)
 
 
 def ask(prompt):
@@ -189,6 +189,61 @@ def reject_cancellation(item_id):
     return item
 
 
+def approve_reminder(item_id, env=None):
+    """Send one PayPal reminder only after a fresh status check and manager approval."""
+    queue = read_json(approvals_path(), [])
+    reminder = _find_item(queue, item_id)
+    if reminder.get("type") != "payment_reminder" or reminder.get("status") != "pending":
+        raise ValueError("This reminder is no longer waiting for approval.")
+    extension = _find_item(queue, reminder.get("proposal_id"))
+    if extension.get("type") != "extension" or extension.get("status") != "sent" or not extension.get("invoice_id"):
+        raise ValueError("The original extension has no eligible sent invoice.")
+    env = env or load_env()
+    try:
+        status = read_invoice(env, extension["invoice_id"])["status"]
+        if status in PAID:
+            outcome = confirm_invoice_if_paid(extension["invoice_id"], env, source="reminder")
+            if outcome is None or not outcome["confirmed"]:
+                raise RuntimeError("PayPal payment status changed during confirmation.")
+            queue = read_json(approvals_path(), [])
+            reminder = _find_item(queue, item_id)
+            reminder["status"] = "superseded"
+            write_json(approvals_path(), queue)
+            log_decision("human", "reminder_skipped_paid", {
+                "id": item_id, "proposal_id": extension["id"], "guest_id": extension.get("guest_id"),
+            })
+            return {"status": "superseded", "item": reminder}
+        if status not in {"SENT", "UNPAID"}:
+            raise RuntimeError("PayPal invoice is not unpaid and sent.")
+        send_reminder(env, extension["invoice_id"],
+                      "Reminder: your stay extension invoice", reminder["message_draft"])
+    except (Exception, SystemExit) as error:
+        log_decision("human", "reminder_failed", {
+            "id": item_id, "proposal_id": extension["id"],
+            "guest_id": extension.get("guest_id"), "error_type": type(error).__name__,
+        })
+        raise
+    reminder["status"] = "done"
+    write_json(approvals_path(), queue)
+    log_decision("human", "approved_reminder", {
+        "id": item_id, "proposal_id": extension["id"], "guest_id": extension.get("guest_id"),
+    })
+    return {"status": "done", "item": reminder}
+
+
+def reject_reminder(item_id):
+    queue = read_json(approvals_path(), [])
+    reminder = _find_item(queue, item_id)
+    if reminder.get("type") != "payment_reminder" or reminder.get("status") != "pending":
+        raise ValueError("This reminder is no longer waiting for approval.")
+    reminder["status"] = "rejected"
+    write_json(approvals_path(), queue)
+    log_decision("human", "manager_rejected_reminder", {
+        "id": item_id, "proposal_id": reminder.get("proposal_id"), "guest_id": reminder.get("guest_id"),
+    })
+    return reminder
+
+
 def defer_item(item_id):
     queue = read_json(approvals_path(), [])
     item = _find_item(queue, item_id)
@@ -273,6 +328,24 @@ def main():
             elif answer == "n":
                 reject_cancellation(item["id"])
                 print("  → 却下しました。請求書はそのままです。")
+            else:
+                defer_item(item["id"])
+                print("  → あとで確認します。")
+        elif item["type"] == "payment_reminder":
+            print(f"[{item['id']}] 支払い催促の提案　{item['guest_name']} 様")
+            print(f"  AIの理由: {item['reason']}")
+            print("  案内文の下書き:\n    " + item["message_draft"].replace("\n", "\n    "))
+            answer = ask("\nPayPal から催促を送りますか？ y / n / s : ")
+            if answer == "y":
+                try:
+                    result = approve_reminder(item["id"], env=env)
+                    print("  → 支払い済みのため催促は送りませんでした。" if result["status"] == "superseded"
+                          else "  → PayPal から催促を送りました。")
+                except (RuntimeError, SystemExit) as error:
+                    print(f"  → 催促に失敗しました: {type(error).__name__}")
+            elif answer == "n":
+                reject_reminder(item["id"])
+                print("  → 却下しました。催促は送っていません。")
             else:
                 defer_item(item["id"])
                 print("  → あとで確認します。")

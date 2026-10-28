@@ -30,6 +30,7 @@ The builder has worked at hotels in Okinawa and Hokkaido, and has been on shift 
 4. **A manager approves** each proposal with one click on the dashboard.
 5. **PayPal closes the loop.** Approval creates and sends a PayPal invoice. When the guest pays, a PayPal webhook confirms the extension within seconds, without a manager pressing a button.
 6. **Plans change.** If an official update restores a guest's flight, the agent proposes cancelling the unpaid invoice. When the manager approves, PayPal cancels it and tells the guest.
+7. **Nudges, not nags.** For unpaid invoices, the AI proposes a reminder. PayPal sends it only after manager approval, at most once per invoice.
 
 ```mermaid
 flowchart LR
@@ -58,6 +59,7 @@ The AI can **look things up, propose, and notify staff — nothing else.** It ha
 | **Direct bookings only** — OTA bookings go to staff | The inn cannot invoice a guest who paid an online travel agency |
 | **Extension-room inventory** cannot be exceeded | No overbooking |
 | Cancellations only for unpaid invoices, after an official restore | Paid invoices are never touched by the agent; refunds stay with staff |
+| Read-only PayPal access for the agent | The agent can check an invoice but has no PayPal tool that writes |
 | No duplicate proposals or staff notes | Re-running the AI is safe |
 | **Allowlisted tools only**, max 20 steps | Unknown tools are blocked and logged |
 | **No money moves without a human** | Every approval is a POST from the manager's dashboard |
@@ -70,6 +72,7 @@ All calls use the **PayPal REST API in the Sandbox** ([`paypal_tools.py`](paypal
 - `POST /v1/oauth2/token` — OAuth 2.0 client-credentials login
 - `POST /v2/invoicing/invoices` — create the invoice (nights × nightly rate, inn's typhoon discount, guest message as the invoice note)
 - `POST /v2/invoicing/invoices/{id}/send` — send it to the guest
+- `POST /v2/invoicing/invoices/{id}/remind` — send a payment reminder, only after a manager approves
 - `POST /v2/invoicing/invoices/{id}/cancel` — cancel a sent, unpaid invoice after manager approval and notify the guest
 - `DELETE /v2/invoicing/invoices/{id}` — delete an unsent invoice draft after manager approval
 - `POST /v2/invoicing/invoices/{id}/payments` — **Sandbox demo only:** a manager-pressed button that records an external payment, for judges who don't want to log in as the guest. The guest-pays-in-PayPal path is the primary flow.
@@ -77,6 +80,8 @@ All calls use the **PayPal REST API in the Sandbox** ([`paypal_tools.py`](paypal
 - `POST /v1/notifications/verify-webhook-signature` — verify that a payment notification came from PayPal
 - `INVOICING.INVOICE.PAID` webhook — after verification, fetch the invoice with `GET /v2/invoicing/invoices/{id}` and confirm the extension only when PayPal reports it paid
 - `INVOICING.INVOICE.CANCELLED` webhook — after verification, fetch the invoice and reflect PayPal's confirmed cancellation
+
+The agent's PayPal access is read-only: it can check an invoice through `GET`, while reminder sending requires manager approval. PayPal's reminder API accepts a subject and note but may replace both with system-defined email text.
 
 PayPal's current cancellation API accepts `subject` and `note` but says it uses system-defined email text instead of those values. The manager sees the drafted guest message, while PayPal sends its standard cancellation notice. A localized explanation would need a separate staff communication step.
 
@@ -125,11 +130,13 @@ In `env.txt`:
 
 To show a restored flight, **Approve & send PayPal invoice** for Kim Minji, then click **Simulate 23:30 airline update (demo)** → **Run AI check** → **Approve & cancel PayPal invoice**. PayPal is checked again immediately before cancellation; an already paid invoice stays paid.
 
+To show a reminder, send Emily Carter's invoice and leave it unpaid. After the official update, run the AI check, review the reminder proposal, then click **Approve & send PayPal reminder**. The app checks PayPal again before sending; an already paid invoice receives no reminder.
+
 A terminal-only version is also available: `python3 agent.py --reset`, `python3 approve.py`, `python3 check_payments.py`.
 
 `AI_MODE` defaults to `auto` (try Gemini, then a recorded demo if available); set it to `live` or `replay` to choose one source. After a successful live run, `python3 agent.py --reset --record` saves Gemini responses in `data/replay/gemini_run.json` for demo replay.
 
-The updated notice uses a separate optional replay file, `data/replay/gemini_update_run.json`. A local operator can create it with `python3 record_demo.py`; this helper resets the CLI demo state and sends a real Sandbox invoice, so run it only when ready to record the two scenarios.
+The updated notice uses a separate optional replay file, `data/replay/gemini_update_run.json`. A local operator can create it with `python3 record_demo.py`; this helper resets the CLI demo state and sends real Sandbox invoices for Kim and Emily, so run it only when ready to record the cancellation and reminder scenarios.
 
 ### Tests
 

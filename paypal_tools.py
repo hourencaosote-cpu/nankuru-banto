@@ -1,8 +1,7 @@
 """
 「手」の部分：PayPal sandbox で延泊の請求書を作る。
 
-請求・支払い記録は人が Web 画面で実行したときだけ呼ぶ。
-AI（agent.py）からは呼べないようにしてある。
+AI は請求書の状態だけを読み、請求・催促・支払い記録は人の承認後だけ呼ぶ。
 """
 
 import base64
@@ -103,6 +102,40 @@ def get_invoice_status(env, invoice_id, token=None):
     if status != 200:
         raise RuntimeError(f"請求書の確認に失敗しました: {json.dumps(res, ensure_ascii=False)}")
     return res.get("status", "")
+
+
+def read_invoice(env, invoice_id):
+    """Return only the invoice fields needed by the read-only agent tool."""
+    token = _get_token(env)
+    path = f"/v2/invoicing/invoices/{urllib.parse.quote(str(invoice_id), safe='')}"
+    status, invoice = _call("GET", path, token=token)
+    if status != 200:
+        raise RuntimeError("PayPal could not read the invoice.")
+    detail = invoice.get("detail", {})
+    metadata = detail.get("metadata", {})
+    due_amount = invoice.get("due_amount") or {}
+    return {
+        "status": invoice.get("status"),
+        "due_amount": due_amount.get("value") if isinstance(due_amount, dict) else None,
+        "viewed_by_recipient": bool(detail.get("viewed_by_recipient", False)),
+        "last_sent_time": metadata.get("last_sent_time"),
+    }
+
+
+def send_reminder(env, invoice_id, subject, note):
+    """Send a reminder only from the manager approval path."""
+    try:
+        token = _get_token(env)
+        path = f"/v2/invoicing/invoices/{urllib.parse.quote(str(invoice_id), safe='')}/remind"
+        status, _ = _call("POST", path, token=token, body={
+            "subject": subject,
+            "note": note,
+            "send_to_invoicer": True,
+        })
+    except SystemExit:
+        raise RuntimeError("PayPal could not send the invoice reminder.") from None
+    if status != 204:
+        raise RuntimeError("PayPal could not send the invoice reminder.")
 
 
 def cancel_invoice(env, invoice_id, note):

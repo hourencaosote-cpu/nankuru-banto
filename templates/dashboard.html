@@ -138,7 +138,7 @@
           <p>AI prepares. Safety rules filter. You decide.</p>
         </div>
 
-        {% if not proposals and not staff_notes and not cancellations %}
+        {% if not proposals and not staff_notes and not cancellations and not reminders %}
           <div class="empty-state">
             <div class="empty-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M7 12.5 10.2 16 17 8.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -265,6 +265,42 @@
                   <button class="button button-danger-ghost" type="submit">Reject</button>
                 </form>
                 <form method="post" action="{{ url_for('review_later', item_id=cancellation.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-quiet" type="submit">Later</button>
+                </form>
+              </div>
+            {% endif %}
+          </article>
+        {% endfor %}
+
+        {% for reminder in reminders %}
+          <article class="proposal-card status-border-{{ reminder.status }}">
+            <header class="card-header">
+              <div>
+                <div class="card-kicker"><span>{{ reminder.id }}</span><span>{{ reminder.language }}</span></div>
+                <h3>SEND PAYMENT REMINDER · {{ reminder.guest_name }}</h3>
+              </div>
+              <span class="status-badge status-{{ reminder.status }}">{{ 'Reminder sent by PayPal' if reminder.status == 'done' else 'Already paid — no reminder sent' if reminder.status == 'superseded' else status_labels.get(reminder.status, reminder.status|title) }}</span>
+            </header>
+            <dl class="decision-details"><div><dt>AI rationale</dt><dd>{{ reminder.reason }}</dd></div></dl>
+            <div class="message-preview">
+              <div class="message-heading"><span>Guest reminder message draft</span><span>{{ reminder.language }}</span></div>
+              <p>{{ reminder.message_draft }}</p>
+            </div>
+            <p class="cancellation-mail-note">Checked in PayPal (read-only status lookup).</p>
+            <p class="cancellation-mail-note">PayPal may use its standard reminder text instead of this draft.</p>
+            {% if reminder.status == 'pending' %}
+              <p class="cancellation-warning">Nothing is sent until you approve.</p>
+              <div class="card-actions">
+                <form method="post" action="{{ url_for('approve_reminder_action', item_id=reminder.id) }}" class="js-loading-form" data-loading-message="Checking and sending the PayPal sandbox reminder…">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-primary" type="submit">Approve &amp; send PayPal reminder</button>
+                </form>
+                <form method="post" action="{{ url_for('reject_reminder_action', item_id=reminder.id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="button button-danger-ghost" type="submit">Reject</button>
+                </form>
+                <form method="post" action="{{ url_for('review_later', item_id=reminder.id) }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button class="button button-quiet" type="submit">Later</button>
                 </form>

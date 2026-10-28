@@ -16,8 +16,8 @@ from flask import Flask, abort, flash, g, redirect, render_template, request, se
 from werkzeug.exceptions import RequestEntityTooLarge
 
 import agent
-from approve import (approve_cancellation, approve_extension, defer_item, reject_cancellation,
-                     reject_extension, resolve_staff_note)
+from approve import (approve_cancellation, approve_extension, approve_reminder, defer_item,
+                     reject_cancellation, reject_extension, reject_reminder, resolve_staff_note)
 from check_payments import check_payments as check_payments_action, confirm_invoice_if_paid
 from common import (
     DATA_DIR, approvals_path, flights_path, load_env, log_decision, log_path, notice_scenario,
@@ -70,6 +70,12 @@ STATUS_LABELS = {
 ACTION_LABELS = {
     "proposed_extension": "Stay extension proposed",
     "proposed_cancellation": "Invoice cancellation proposed",
+    "proposed_reminder": "Payment reminder proposed",
+    "rejected_reminder": "Safety gate blocked a reminder",
+    "approved_reminder": "Manager approved — PayPal reminder sent",
+    "reminder_skipped_paid": "No reminder: the invoice was already paid",
+    "reminder_failed": "Reminder failed safely",
+    "manager_rejected_reminder": "Manager rejected a reminder",
     "rejected_cancellation": "Safety gate blocked a cancellation",
     "manager_rejected_cancellation": "Manager rejected a cancellation",
     "approved_cancellation": "Manager approved — PayPal invoice cancelled",
@@ -116,6 +122,7 @@ GATE_RULES = [
     "No duplicate proposal for the same guest",
     "Guest message draft is required",
     "Cancellations only for unpaid invoices whose departure is officially restored",
+    "Reminders only for unpaid invoices, once per invoice, while the flight is still cancelled",
 ]
 
 
@@ -454,6 +461,10 @@ def _gate_reason(reason):
         ("まだ欠航", "The official notice still shows a cancelled flight."),
         ("便の再開が確認できません", "The official notice does not confirm the flight has resumed."),
         ("承認待ちの取り消し", "A cancellation proposal is already awaiting review."),
+        ("送付済みの延泊請求書はありません", "The guest has no sent stay-extension invoice."),
+        ("未払いの送付済み請求書と確認できません", "PayPal does not show an unpaid sent invoice."),
+        ("便が再開しています", "The flight has resumed. Propose invoice cancellation instead."),
+        ("この請求書への催促提案", "A reminder has already been proposed for this invoice."),
         ("漢字が含まれています", "The Korean guest message needs a Hangul-only rewrite."),
     )
     for marker, translation in translations:
@@ -573,6 +584,9 @@ def _log_view(entry, flights, guest_count, guest_names):
         elif name == "list_guests":
             label = f"Checked guest roster → {guest_count} guests"
             subject = "Guest records"
+        elif name == "check_invoice_payment":
+            label = "Checked PayPal invoice status (read-only)"
+            subject = guest_names.get(args.get("guest_id")) or args.get("guest_id") or "Guest"
         else:
             label = "AI used an investigation tool"
             subject = str(name or "Tool")
@@ -584,7 +598,7 @@ def _log_view(entry, flights, guest_count, guest_names):
         }
 
     guest_id = detail.get("guest_id")
-    if entry.get("action") in {"rejected_proposal", "rejected_cancellation"}:
+    if entry.get("action") in {"rejected_proposal", "rejected_cancellation", "rejected_reminder"}:
         subject = guest_names.get(guest_id) or guest_id or "System"
     else:
         subject = guest_names.get(guest_id) or detail.get("guest_name") or detail.get("id") or guest_id or "System"
@@ -671,7 +685,7 @@ def build_dashboard():
     gate_events = []
     seen_guests = set()
     for entry in reversed(log_entries[-80:]):
-        if entry.get("action") not in {"rejected_proposal", "rejected_cancellation"}:
+        if entry.get("action") not in {"rejected_proposal", "rejected_cancellation", "rejected_reminder"}:
             continue
         detail = entry.get("detail", {})
         guest_id = detail.get("guest_id", "Unknown guest")
@@ -701,6 +715,10 @@ def build_dashboard():
         [item for item in approvals if item.get("type") == "invoice_cancellation"],
         key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
     )
+    reminders = sorted(
+        [item for item in approvals if item.get("type") == "payment_reminder"],
+        key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
+    )
 
     return {
         "hotel": guest_data.get("hotel", "Nankuru Demo Inn"),
@@ -721,6 +739,7 @@ def build_dashboard():
         "proposals": proposals,
         "staff_notes": staff_notes,
         "cancellations": cancellations,
+        "reminders": reminders,
         "notice_updated": notice_scenario() == "update",
         "gate_events": gate_events,
         "gate_rules": GATE_RULES,
@@ -1078,6 +1097,36 @@ def reject_cancellation_action(item_id):
         flash(str(error), "error")
     else:
         flash("Cancellation proposal rejected. The invoice was left unchanged.", "success")
+    return redirect(url_for("dashboard") + "#review-queue")
+
+
+@app.post("/reminders/<item_id>/approve")
+@workspace_action("approve_reminder")
+def approve_reminder_action(item_id):
+    try:
+        result = approve_reminder(item_id)
+    except ValueError as error:
+        flash(str(error), "error")
+    except (RuntimeError, SystemExit, OSError) as error:
+        _record_web_failure("approve_reminder", error)
+        flash("PayPal could not send the reminder. The saved statuses were not changed.", "error")
+    else:
+        if result["status"] == "superseded":
+            flash("The invoice was already paid. No reminder was sent.", "info")
+        else:
+            flash("Approved. PayPal sent the payment reminder.", "success")
+    return redirect(url_for("dashboard") + "#review-queue")
+
+
+@app.post("/reminders/<item_id>/reject")
+@workspace_action("reject_reminder")
+def reject_reminder_action(item_id):
+    try:
+        reject_reminder(item_id)
+    except ValueError as error:
+        flash(str(error), "error")
+    else:
+        flash("Reminder proposal rejected. Nothing was sent.", "success")
     return redirect(url_for("dashboard") + "#review-queue")
 
 

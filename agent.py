@@ -25,12 +25,13 @@ from contextvars import ContextVar
 from datetime import date, datetime
 
 from common import DATA_DIR, approvals_path, flights_path, load_env, log_decision, log_path, notice_scenario, read_json, write_json
+from paypal_tools import read_invoice
 
 MAX_STEPS = 20            # AI が道具を使える回数の上限（暴走防止）
 MAX_NIGHTS = 3            # 延泊は最大3泊まで
 MAX_DISCOUNT_PERCENT = 30  # 台風割引は最大30%まで
 ACTIVE_EXTENSION_STATUSES = {"pending", "approved", "sent", "confirmed"}
-INVESTIGATION_TOOLS = {"list_guests", "get_flight_status", "get_social_posts", "list_open_invoices"}
+INVESTIGATION_TOOLS = {"list_guests", "get_flight_status", "get_social_posts", "list_open_invoices", "check_invoice_payment"}
 REPLAY_PATH = os.path.join(DATA_DIR, "replay", "gemini_run.json")
 UPDATE_REPLAY_PATH = os.path.join(DATA_DIR, "replay", "gemini_update_run.json")
 _run_state = ContextVar("gemini_run_state", default=None)
@@ -72,6 +73,8 @@ SYSTEM_PROMPT = """あなたは、台風の多い地域にある小さな宿の�
 - 延泊の請求書を下書き・送付済みの客の便が、公式情報で再開していたら、propose_invoice_cancellation に宿泊客ID（guest_id）を渡して請求書の取り消しを提案する。
   案内文には、便が再開したので延泊は不要になったこと、請求書は取り消すので支払いは不要であることを、宿泊客の言語で丁寧に書く（金額は書かない）。
   すでに支払われていたら取り消しは提案せず、notify_staff でスタッフに知らせる（返金はスタッフが判断する）。
+- 送付済みの請求書がある客は check_invoice_payment で支払い状況を確認し、まだ支払われておらず便も欠航のままなら、propose_payment_reminder で催促を提案する（1つの請求書に1回まで）。
+  催促の案内文は宿泊客の言語で丁寧に書き、急かしすぎない（金額は書かない。支払いで延泊が確定することだけ伝える）。
 - 提案が却下されたら、その理由に従って対応を変える（例：OTA予約の客はスタッフへの連絡に切り替える）。
 - スタッフ向けの文章（提案の理由 reason、スタッフへの連絡 note、最後のまとめ）はすべて英語で書く（画面が英語のため）。
 - 全員の確認が終わったら、何をしたかを英語で短くまとめて終える。
@@ -103,6 +106,11 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
+        "name": "check_invoice_payment",
+        "description": "PayPal で、その客の延泊の請求書が支払われたかを確認する。読むだけで何も変更しない。",
+        "parameters": {"type": "object", "properties": {"guest_id": {"type": "string"}}, "required": ["guest_id"]},
+    },
+    {
         "name": "propose_stay_extension",
         "description": "延泊の提案を承認待ちリストに入れる。実行はされず、スタッフが承認するまで何も起きない。金額はシステムが計算する。",
         "parameters": {
@@ -131,6 +139,19 @@ TOOLS = [
     {
         "name": "propose_invoice_cancellation",
         "description": "宿泊客IDから、便の再開などで不要になった、まだ支払われていない延泊の請求書を探し、取り消しの提案を承認待ちリストに入れる。実行はされず、スタッフが承認するまで何も起きない。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "guest_id": {"type": "string"},
+                "reason": {"type": "string", "description": "スタッフ向け英語1〜2文"},
+                "message_draft": {"type": "string", "description": "宿泊客の言語で書いた丁寧な案内文"},
+            },
+            "required": ["guest_id", "reason", "message_draft"],
+        },
+    },
+    {
+        "name": "propose_payment_reminder",
+        "description": "送付済みでまだ支払われていない延泊の請求書について、PayPal から催促を送る提案を承認待ちリストに入れる。実行はされず、スタッフが承認するまで何も起きない。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -187,6 +208,74 @@ def tool_list_open_invoices(args):
          "status": item.get("status")}
         for item in _approvals() if item.get("type") == "extension"
     ]}
+
+
+def _paypal_env():
+    state = _run_state.get()
+    return state["env"] if state else load_env()
+
+
+def _sent_extension(queue, guest_id):
+    return next((item for item in reversed(queue) if item.get("type") == "extension"
+                 and item.get("guest_id") == guest_id and item.get("status") == "sent"
+                 and item.get("invoice_id")), None)
+
+
+def tool_check_invoice_payment(args):
+    guest_id = args.get("guest_id", "")
+    extension = _sent_extension(_approvals(), guest_id)
+    if extension is None:
+        return {"error": "この客に送付済みの延泊請求書はありません。"}
+    invoice = read_invoice(_paypal_env(), extension["invoice_id"])
+    return {"guest_id": guest_id, "paypal_status": invoice["status"],
+            "due_amount": invoice["due_amount"],
+            "viewed_by_recipient": invoice["viewed_by_recipient"]}
+
+
+def tool_propose_payment_reminder(args):
+    queue = _approvals()
+    guest_id = args.get("guest_id", "")
+    guest = _find_guest(guest_id)
+    extension = _sent_extension(queue, guest_id)
+    reasons = []
+    if guest is None:
+        reasons.append("その宿泊客IDは存在しません。")
+    if extension is None:
+        reasons.append("この客に送付済みの延泊請求書はありません。")
+    else:
+        status = read_invoice(_paypal_env(), extension["invoice_id"])["status"]
+        if status not in {"SENT", "UNPAID"}:
+            reasons.append("PayPal で未払いの送付済み請求書と確認できません。催促は提案できません。")
+    flight_number = guest.get("departure_flight") if guest else None
+    flight = _flights().get("flights", {}).get(flight_number, {})
+    if guest and flight.get("status") != "cancelled":
+        reasons.append("便が再開しています。催促ではなく propose_invoice_cancellation を使ってください。")
+    if extension and any(item.get("type") == "payment_reminder"
+                         and item.get("proposal_id") == extension["id"]
+                         and item.get("status") in {"pending", "done"} for item in queue):
+        reasons.append("この請求書への催促提案はすでにあります。1つの請求書に催促は1回までです。")
+    draft = str(args.get("message_draft") or "")
+    if not draft.strip():
+        reasons.append("宿泊客への案内文の下書きが必要です。")
+    if guest and guest.get("language") == "Korean" and re.search(r"[\u3400-\u4DBF\u4E00-\u9FFF]", draft):
+        reasons.append("韓国語の案内文に漢字が含まれています。ハングルだけで書き直して、もう一度 propose_payment_reminder を呼んでください。")
+    if reasons:
+        log_decision("gate", "rejected_reminder", {"guest_id": guest_id,
+                     "proposal_id": extension.get("id") if extension else None, "reasons": reasons})
+        return {"accepted": False, "reasons": reasons}
+
+    item = {
+        "id": f"P{len(queue) + 1:03d}", "type": "payment_reminder",
+        "proposal_id": extension["id"], "guest_id": guest_id,
+        "guest_name": guest["name"], "language": guest["language"],
+        "reason": args.get("reason", ""), "message_draft": draft,
+        "status": "pending", "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    queue.append(item)
+    write_json(approvals_path(), queue)
+    log_decision("ai", "proposed_reminder", item)
+    return {"accepted": True, "proposal_id": item["id"],
+            "status": "スタッフの承認待ち（まだ何も実行されていません）"}
 
 
 def _policy_discount():
@@ -374,9 +463,11 @@ TOOL_FUNCTIONS = {
     "get_flight_status": tool_get_flight_status,
     "get_social_posts": tool_get_social_posts,
     "list_open_invoices": tool_list_open_invoices,
+    "check_invoice_payment": tool_check_invoice_payment,
     "propose_stay_extension": tool_propose_stay_extension,
     "notify_staff": tool_notify_staff,
     "propose_invoice_cancellation": tool_propose_invoice_cancellation,
+    "propose_payment_reminder": tool_propose_payment_reminder,
 }
 
 
@@ -423,6 +514,7 @@ def _new_run_state(env, web):
     started = time.monotonic()
     return {
         "started": started,
+        "env": env,
         "deadline": started + _budget_seconds(env) if web else None,
         "waits": (2, 5, 10) if web else (5, 15, 30, 60),
         "model": env.get("GEMINI_MODEL") or "gemini-3.8-flash",
@@ -626,7 +718,9 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
     state = _new_run_state(env, web)
     before_counts = _item_counts() if record and recording_required_type == "extension" else None
     before_cancellations = (sum(item.get("type") == "invoice_cancellation" for item in _approvals())
-                            if record and recording_required_type == "invoice_cancellation" else None)
+                            if record and recording_required_type in {"invoice_cancellation", "cancellation_and_reminder"} else None)
+    before_reminders = (sum(item.get("type") == "payment_reminder" for item in _approvals())
+                        if record and recording_required_type == "cancellation_and_reminder" else None)
     before_items = read_json(approvals_path(), []) if mode == "auto" and web else None
     before_log_lines = _log_line_count() if before_items is not None else None
     token = _run_state.set(state)
@@ -693,25 +787,31 @@ def run_ai(env, call_model=None, mode=None, web=False, record=False, replay_reas
             run_agent(replay_model, env)
             return "replay"
         if record:
-            if recording_required_type == "invoice_cancellation":
+            if recording_required_type in {"invoice_cancellation", "cancellation_and_reminder"}:
                 proposals = sum(item.get("type") == "invoice_cancellation" for item in _approvals()) - before_cancellations
+                reminders = (sum(item.get("type") == "payment_reminder" for item in _approvals()) - before_reminders
+                             if before_reminders is not None else None)
                 staff_notes = 0
             else:
                 after_counts = _item_counts()
                 proposals = after_counts[0] - before_counts[0]
                 staff_notes = after_counts[1] - before_counts[1]
-            if proposals <= 0:
+            if proposals <= 0 or (before_reminders is not None and reminders <= 0):
                 state["responses"].clear()
-                kind = "取り消し提案" if recording_required_type == "invoice_cancellation" else "延泊提案"
+                kind = ("取り消し提案と催促提案" if before_reminders is not None else
+                        "取り消し提案" if recording_required_type == "invoice_cancellation" else "延泊提案")
                 reason = f"記録を保存しませんでした：この実行で{kind}が作成されませんでした。"
                 print(reason)
                 raise GeminiUnavailable(None, reason)
             _save_recording(state["responses"], env, path=recording_path)
             elapsed = time.monotonic() - state["started"]
             gemini_calls = state["http_calls"] or state["model_calls"]
-            label = "取り消し提案" if recording_required_type == "invoice_cancellation" else "延泊提案"
-            print(f"記録を保存しました：{label} {proposals}件、スタッフ連絡 {staff_notes}件、"
-                  f"Gemini 呼び出し {gemini_calls}回、所要 {elapsed:.1f}秒。")
+            if recording_required_type == "cancellation_and_reminder":
+                summary = f"取り消し提案 {proposals}件、催促提案 {reminders}件"
+            else:
+                label = "取り消し提案" if recording_required_type == "invoice_cancellation" else "延泊提案"
+                summary = f"{label} {proposals}件、スタッフ連絡 {staff_notes}件"
+            print(f"記録を保存しました：{summary}、Gemini 呼び出し {gemini_calls}回、所要 {elapsed:.1f}秒。")
         return "live"
     finally:
         _run_state.reset(token)
