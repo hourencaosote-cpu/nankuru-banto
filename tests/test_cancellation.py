@@ -272,7 +272,7 @@ class CancellationTests(unittest.TestCase):
         self.assertEqual(self.entries()[-1]["detail"], {"as_of": "2026-08-06 23:30"})
         self.save([self.extension("cancelled"), {**self.cancellation(), "status": "done"}])
         page = self.client.get("/").get_data(as_text=True)
-        self.assertIn("Official notice as of Aug 6 · 23:30", page)
+        self.assertIn("Official notices only · as of Aug 6 · 23:30", page)
         self.assertNotIn("Simulate 23:30 airline update", page)
         self.assertIn("CANCEL INVOICE · Kim Minji", page)
         self.assertIn("Invoice cancelled · stay not needed", page)

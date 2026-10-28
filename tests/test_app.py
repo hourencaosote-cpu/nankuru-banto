@@ -544,7 +544,7 @@ class AppSafetyTests(unittest.TestCase):
 
         page = self.client.get("/").get_data(as_text=True)
 
-        self.assertIn("Data as of Aug 6 · 22:00", page)
+        self.assertIn("Official notices only · as of Aug 6 · 22:00", page)
         self.assertIn("Aug 6 · 22:03", page)
         self.assertEqual(
             json.loads(self.log_path.read_text(encoding="utf-8").splitlines()[-1])["time"],

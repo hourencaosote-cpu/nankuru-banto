@@ -32,20 +32,18 @@
         <span class="pulse-dot" aria-hidden="true"></span>
         <div>
           <strong>{{ typhoon_status }}</strong>
-          <span>Data as of {{ as_of|short_time }} · Official notices only</span>
-          {% if notice_updated %}
-            <span>Official notice as of Aug 6 · 23:30</span>
-          {% else %}
-            <form method="post" action="{{ url_for('airline_update') }}" class="notice-update-form">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button class="notice-update-button" type="submit">Simulate 23:30 airline update (demo)</button>
-            </form>
-            <small>Demo only: loads a fictional updated notice where DEMO-202 is restored.</small>
-          {% endif %}
+          <span>Official notices only · as of {{ as_of|short_time }}</span>
         </div>
       </div>
 
       <div class="top-actions">
+        {% if not notice_updated %}
+          <form method="post" action="{{ url_for('airline_update') }}" class="notice-update-action">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="button button-reset" type="submit">Simulate 23:30 airline update (demo)</button>
+            <small>Demo only: loads a fictional 23:30 notice where two cancelled flights are restored.</small>
+          </form>
+        {% endif %}
         <form method="post" action="{{ url_for('reset_demo') }}" class="js-loading-form" data-confirm-message="Reset this demo? Current approvals and decision logs will be archived. PayPal invoices will not be changed." data-loading-message="Archiving and resetting demo data…">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button class="button button-reset" type="submit">Reset demo</button>
@@ -138,7 +136,7 @@
           <p>AI prepares. Safety rules filter. You decide.</p>
         </div>
 
-        {% if not proposals and not staff_notes and not cancellations and not reminders and not refunds %}
+        {% if not review_items %}
           <div class="empty-state">
             <div class="empty-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24"><path d="M7 12.5 10.2 16 17 8.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -148,7 +146,12 @@
           </div>
         {% endif %}
 
-        {% for proposal in proposals %}
+        {% for item in review_items %}
+          {% if loop.index0 == pending_count %}
+            <h3 class="queue-history-heading">In progress &amp; done</h3>
+          {% endif %}
+          {% if item.type == 'extension' %}
+          {% set proposal = item %}
           <article class="proposal-card status-border-{{ proposal.status }}">
             <header class="card-header">
               <div>
@@ -177,7 +180,7 @@
             </div>
 
             <dl class="decision-details">
-              <div><dt>Official evidence</dt><dd>{{ proposal.evidence }}</dd></div>
+              <div><dt>OFFICIAL EVIDENCE · AT PROPOSAL</dt><dd>{{ proposal.evidence }}</dd></div>
               <div><dt>AI rationale</dt><dd>{{ proposal.reason }}</dd></div>
             </dl>
 
@@ -194,6 +197,17 @@
 
             {% if proposal.invoice_id %}
               <p class="invoice-reference">Sandbox invoice · {{ proposal.invoice_id }}</p>
+            {% endif %}
+
+            {% set pending_types = pending_related.get(proposal.id, []) %}
+            {% if 'invoice_cancellation' in pending_types %}
+              <p class="related-proposal-note">Cancellation proposed — review it in the queue above.</p>
+            {% endif %}
+            {% if 'refund' in pending_types %}
+              <p class="related-proposal-note">Refund proposed — review it in the queue above.</p>
+            {% endif %}
+            {% if 'payment_reminder' in pending_types %}
+              <p class="related-proposal-note">Reminder proposed — review it in the queue above.</p>
             {% endif %}
 
             {% if proposal.status == 'pending' %}
@@ -219,7 +233,7 @@
                 </form>
               </div>
             {% elif proposal.status == 'sent' %}
-              {% if not proposal.payment_recorded_by_manager %}
+              {% if not proposal.payment_recorded_by_manager and 'invoice_cancellation' not in pending_types %}
                 <div class="card-actions">
                   <div class="sandbox-payment-action">
                     <form method="post" action="{{ url_for('record_sandbox_payment', item_id=proposal.id) }}" class="js-loading-form" data-loading-message="Recording the sandbox payment…">
@@ -235,9 +249,8 @@
               {% endif %}
             {% endif %}
           </article>
-        {% endfor %}
-
-        {% for cancellation in cancellations %}
+          {% elif item.type == 'invoice_cancellation' %}
+          {% set cancellation = item %}
           <article class="proposal-card cancellation-card status-border-{{ cancellation.status }}">
             <header class="card-header">
               <div>
@@ -273,9 +286,8 @@
               </div>
             {% endif %}
           </article>
-        {% endfor %}
-
-        {% for reminder in reminders %}
+          {% elif item.type == 'payment_reminder' %}
+          {% set reminder = item %}
           <article class="proposal-card status-border-{{ reminder.status }}">
             <header class="card-header">
               <div>
@@ -309,9 +321,8 @@
               </div>
             {% endif %}
           </article>
-        {% endfor %}
-
-        {% for refund in refunds %}
+          {% elif item.type == 'refund' %}
+          {% set refund = item %}
           <article class="proposal-card status-border-{{ refund.status }}">
             <header class="card-header">
               <div>
@@ -347,9 +358,8 @@
               </div>
             {% endif %}
           </article>
-        {% endfor %}
-
-        {% for note in staff_notes %}
+          {% elif item.type == 'staff_note' %}
+          {% set note = item %}
           <article class="staff-card">
             <header class="card-header">
               <div>
@@ -372,6 +382,7 @@
               </div>
             {% endif %}
           </article>
+          {% endif %}
         {% endfor %}
       </section>
 

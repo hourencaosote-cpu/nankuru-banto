@@ -135,7 +135,9 @@ h1, h2, h3, .metric-card strong, .price-block strong, .loading-card strong { fon
 
 .pulse-dot { width: 9px; height: 9px; flex: 0 0 9px; background: #5ed2a0; border-radius: 50%; box-shadow: 0 0 0 5px rgba(94, 210, 160, 0.12); }
 
-.top-actions { justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.top-actions { justify-content: flex-end; align-items: flex-start; flex-wrap: nowrap; gap: 10px; }
+.notice-update-action { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.notice-update-action small { max-width: 280px; color: #d2d7e5; font-size: 0.65rem; line-height: 1.25; text-align: center; }
 .payment-check-action { display: flex; flex-direction: column; align-items: center; gap: 3px; }
 .payment-check-action small { max-width: 190px; color: #d2d7e5; font-size: 0.65rem; line-height: 1.25; text-align: center; }
 
@@ -286,6 +288,8 @@ h1, h2, h3, .metric-card strong, .price-block strong, .loading-card strong { fon
 .response-staff { color: #805634; border-color: #bd865b; }
 
 .review-column { display: grid; gap: 14px; scroll-margin-top: 16px; }
+.queue-history-heading { margin: 8px 2px 0; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.78rem; font-weight: 750; }
+.related-proposal-note { margin: 0 20px 14px; padding: 8px 10px; border-radius: var(--radius-sm); color: var(--blue-700); background: var(--blue-100); font-size: 0.75rem; font-weight: 700; }
 .section-heading { min-height: 72px; padding: 4px 2px 10px; display: flex; justify-content: space-between; align-items: end; gap: 24px; border-bottom: 1px solid var(--line); }
 .section-heading > p { margin: 0 0 3px; color: var(--muted); font-size: 0.76rem; }
 
@@ -309,8 +313,6 @@ h1, h2, h3, .metric-card strong, .price-block strong, .loading-card strong { fon
 .status-cancelled, .status-refunded, .status-done { color: #654676; background: #f2eaf5; }
 .status-superseded { color: var(--green-700); background: var(--green-50); }
 .response-cancelled { color: #654676; border-color: #aa83b9; }
-.notice-update-form { margin-top: 5px; }
-.notice-update-button { padding: 0; border: 0; background: none; color: #e8e2ef; font: inherit; font-size: 0.7rem; text-decoration: underline; cursor: pointer; }
 .official-status small { display: block; color: #d2d7e5; font-size: 0.65rem; }
 .card-header { padding: 18px 20px 15px; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .card-header h3 { margin: 4px 0 0; color: var(--navy-950); font-size: 1.08rem; }
@@ -420,14 +422,20 @@ h1, h2, h3, .metric-card strong, .price-block strong, .loading-card strong { fon
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+@media (max-width: 1550px) {
+  .topbar { grid-template-columns: minmax(0, 1fr) minmax(280px, auto); gap: 14px 24px; }
+  .official-status { grid-column: 2; grid-row: 1; }
+  .top-actions { grid-column: 1 / -1; grid-row: 2; }
+  .payment-check-action small { display: none; }
+}
+
 @media (max-width: 1240px) {
-  .topbar { grid-template-columns: minmax(280px, 1fr) minmax(280px, auto); }
-  .official-status { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
   .dashboard-grid { grid-template-columns: minmax(220px, 0.68fr) minmax(480px, 1.5fr); }
   .right-column { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 900px) {
+  .top-actions { flex-wrap: wrap; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-grid { grid-template-columns: 1fr; }
   .guest-panel, .right-column { grid-column: auto; }
@@ -439,7 +447,7 @@ h1, h2, h3, .metric-card strong, .price-block strong, .loading-card strong { fon
 @media (max-width: 680px) {
   .topbar { padding: 18px 16px; grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .official-status { grid-column: auto; grid-row: auto; }
-  .top-actions { justify-content: stretch; }
+  .top-actions { grid-column: auto; grid-row: auto; justify-content: stretch; }
   .top-actions form { flex: 1; }
   .top-actions .button { width: 100%; }
   .metrics, .dashboard-grid, .tracker-section { padding-left: 14px; padding-right: 14px; }

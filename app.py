@@ -496,8 +496,25 @@ def _guest_response(guest, items, flight_status):
     guest_items = [item for item in items if item.get("guest_id") == guest.get("id")]
     extensions = [item for item in guest_items if item.get("type") == "extension"]
     staff_notes = [item for item in guest_items if item.get("type") == "staff_note"]
+    extension = extensions[-1] if extensions else None
+    if extension and extension.get("status") == "cancelled":
+        return "Invoice cancelled", "cancelled"
+    if extension and extension.get("status") == "refunded":
+        pending_refund = any(item.get("type") == "refund" and item.get("proposal_id") == extension.get("id")
+                             and item.get("refund_status") == "PENDING" for item in guest_items)
+        return ("Refund pending" if pending_refund else "Refunded"), "refunded"
+    pending_actions = [item for item in guest_items if item.get("status") == "pending"
+                       and item.get("type") in {"invoice_cancellation", "refund", "payment_reminder"}]
+    if pending_actions:
+        latest = max(enumerate(pending_actions), key=lambda pair: (pair[1].get("created_at") or "", pair[0]))[1]
+        return {"invoice_cancellation": "Cancellation proposed", "refund": "Refund proposed",
+                "payment_reminder": "Reminder proposed"}[latest["type"]], "pending"
+    if extension and extension.get("status") == "confirmed":
+        return STATUS_LABELS["confirmed"], "confirmed"
+    if any(item.get("type") == "payment_reminder" and item.get("status") == "done" for item in guest_items):
+        return "Reminder sent", "sent"
     if extensions:
-        status = extensions[-1].get("status", "pending")
+        status = extension.get("status", "pending")
         return STATUS_LABELS.get(status, status.replace("_", " ").title()), status
     if staff_notes:
         status = staff_notes[-1].get("status", "pending")
@@ -521,7 +538,7 @@ def _tracker_data(guest_rows, approvals):
         "approved": ("Pending approval", "approved"),
         "sent": ("Invoice sent", "sent"),
         "confirmed": ("Paid · confirmed", "confirmed"),
-        "refunded": ("Refunded · stay not needed", "refunded"),
+        "refunded": ("Refunded", "refunded"),
         "cancelled": ("Invoice cancelled", "cancelled"),
         "rejected": ("Rejected", "rejected"),
         "staff": ("Staff follow-up", "approved"),
@@ -535,6 +552,14 @@ def _tracker_data(guest_rows, approvals):
         status, status_style = tracker_statuses.get(
             guest["response_style"], (guest["response"], guest["response_style"]),
         )
+        if guest["response"] in {"Cancellation proposed", "Refund proposed", "Reminder proposed",
+                                 "Refund pending", "Reminder sent"}:
+            status = guest["response"]
+            status_style = "pending" if guest["response"].endswith("proposed") else guest["response_style"]
+        elif guest["response"] == "Invoice cancelled":
+            status = "Invoice cancelled"
+        elif guest["response"] == "Refunded":
+            status = "Refunded"
 
         flight_number = guest.get("departure_flight", "")
         flight_status = guest.get("flight_status", "unknown")
@@ -737,27 +762,15 @@ def build_dashboard():
         if len(gate_events) == 4:
             break
 
-    status_order = {"pending": 0, "approved": 1, "sent": 2, "confirmed": 3, "refunded": 4, "rejected": 5}
-    proposals = sorted(
-        [item for item in approvals if item.get("type") == "extension"],
-        key=lambda item: (status_order.get(item.get("status"), 9), item.get("created_at", "")),
-    )
-    staff_notes = sorted(
-        [item for item in approvals if item.get("type") == "staff_note"],
-        key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
-    )
-    cancellations = sorted(
-        [item for item in approvals if item.get("type") == "invoice_cancellation"],
-        key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
-    )
-    reminders = sorted(
-        [item for item in approvals if item.get("type") == "payment_reminder"],
-        key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
-    )
-    refunds = sorted(
-        [item for item in approvals if item.get("type") == "refund"],
-        key=lambda item: (item.get("status") != "pending", item.get("created_at", "")),
-    )
+    review_items = [item for _index, item in sorted(
+        ((index, item) for index, item in enumerate(approvals)
+         if item.get("type") in {"extension", "invoice_cancellation", "refund", "payment_reminder", "staff_note"}),
+        key=lambda pair: (pair[1].get("status") != "pending", pair[1].get("created_at") or "", pair[0]),
+    )]
+    pending_related = {}
+    for item in approvals:
+        if item.get("status") == "pending" and item.get("type") in {"invoice_cancellation", "refund", "payment_reminder"}:
+            pending_related.setdefault(item.get("proposal_id"), []).append(item["type"])
 
     return {
         "hotel": guest_data.get("hotel", "Nankuru Demo Inn"),
@@ -776,11 +789,9 @@ def build_dashboard():
             "refunded_total": refunded_total,
         },
         "guests": guest_rows,
-        "proposals": proposals,
-        "staff_notes": staff_notes,
-        "cancellations": cancellations,
-        "reminders": reminders,
-        "refunds": refunds,
+        "review_items": review_items,
+        "pending_count": sum(item.get("status") == "pending" for item in review_items),
+        "pending_related": pending_related,
         "notice_updated": notice_scenario() == "update",
         "gate_events": gate_events,
         "gate_rules": GATE_RULES,
