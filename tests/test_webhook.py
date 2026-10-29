@@ -235,6 +235,39 @@ class PayPalWebhookTests(unittest.TestCase):
         self.assertEqual(entries[0]["detail"]["guest_id"], "G001")
         self.assertEqual(entries[0]["detail"]["via"], "webhook")
 
+    def test_cancelled_webhook_closes_pending_cancellation_in_same_workspace(self):
+        cancellation = {"id": "P002", "type": "invoice_cancellation", "proposal_id": "P001",
+                        "guest_id": "G001", "status": "pending"}
+        self._write_queue([self._item(), cancellation])
+        event = self._event(event_type="INVOICING.INVOICE.CANCELLED")
+        event["resource"]["invoice"]["status"] = "CANCELLED"
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
+             mock.patch.object(web_app, "get_invoice_status", return_value="CANCELLED"):
+            self.assertEqual(self.client.post("/webhooks/paypal", json=event).status_code, 200)
+            self.assertEqual(self.client.post("/webhooks/paypal", json=event).status_code, 200)
+        self.assertEqual([item["status"] for item in self._queue()], ["cancelled", "done"])
+        entries = [entry for entry in self._entries(self.workspace_log)
+                   if entry["action"] == "invoice_cancel_confirmed"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["detail"]["proposal_closed"], "P002")
+
+    def test_cancelled_webhook_closes_leftover_proposal_for_already_cancelled_extension(self):
+        self._write_queue([
+            {**self._item(), "status": "cancelled"},
+            {"id": "P002", "type": "invoice_cancellation", "proposal_id": "P001",
+             "guest_id": "G001", "status": "pending"},
+            {"id": "P003", "type": "invoice_cancellation", "proposal_id": "P999",
+             "guest_id": "G002", "status": "pending"},
+        ])
+        event = self._event(event_type="INVOICING.INVOICE.CANCELLED")
+        with mock.patch.object(web_app, "verify_webhook_signature", return_value=True), \
+             mock.patch.object(web_app, "get_invoice_status", return_value="CANCELLED"):
+            self.assertEqual(self.client.post("/webhooks/paypal", json=event).status_code, 200)
+        self.assertEqual([item["status"] for item in self._queue()], ["cancelled", "done", "pending"])
+        entries = [entry for entry in self._entries(self.workspace_log)
+                   if entry["action"] == "invoice_cancel_confirmed"]
+        self.assertEqual(entries[0]["detail"]["proposal_closed"], "P002")
+
     def test_cancelled_webhook_accepts_legacy_resource_id(self):
         event = {"event_type": "INVOICING.INVOICE.CANCELLED",
                  "resource": {"id": self.invoice_id, "status": "CANCELLED"}}

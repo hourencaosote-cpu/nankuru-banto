@@ -535,6 +535,33 @@ class AppSafetyTests(unittest.TestCase):
         self.assertIn("#f4f2ec", css)
         self.assertIn("#15202b", css)
 
+    def test_blocked_panel_shows_all_safety_actions_with_english_reasons(self):
+        cases = (
+            ("rejected_proposal", {"reasons": ["OTA経由の予約です。"]},
+             "OTA bookings cannot be billed directly by the inn. Staff follow-up is required."),
+            ("rejected_cancellation", {"reasons": ["まだ欠航です。"]},
+             "The official notice still shows a cancelled flight."),
+            ("rejected_reminder", {"reasons": ["便が再開しています。"]},
+             "The flight has resumed. Propose invoice cancellation instead."),
+            ("rejected_refund", {"reasons": ["まだ欠航です。返金できません。"]},
+             "The official notice still shows a cancelled flight; no refund can be proposed."),
+            ("duplicate_staff_note", {"reason": "この客はすでにスタッフに連絡済みです。"},
+             web_app.ACTION_LABELS["duplicate_staff_note"]),
+            ("draft_rewrite_requested", {"reason": "韓国語の案内文に漢字が含まれています。"},
+             "The Korean guest message needs a Hangul-only rewrite."),
+            ("approval_blocked_notice_changed", {"id": "P001"},
+             web_app.ACTION_LABELS["approval_blocked_notice_changed"]),
+            ("refund_blocked_notice_changed", {"id": "P002"},
+             web_app.ACTION_LABELS["refund_blocked_notice_changed"]),
+        )
+        for action, detail, expected in cases:
+            with self.subTest(action=action):
+                self._write_log_entries([{"time": "2026-08-06T23:30:00", "actor": "gate",
+                                          "action": action, "detail": {"guest_id": "G004", **detail}}])
+                dashboard = web_app.build_dashboard()
+                self.assertEqual(dashboard["gate_events"][0]["reasons"], [expected])
+                self.assertIn(expected, self.client.get("/").get_data(as_text=True))
+
     def test_last_reset_anchors_demo_time_without_changing_audit_log(self):
         self._write_log_entries([
             {"time": "2026-10-15T09:00:00", "actor": "ai", "action": "finished", "detail": {}},
@@ -609,7 +636,8 @@ class AppSafetyTests(unittest.TestCase):
         self.assertNotIn(args["message_draft"], self.log_path.read_text(encoding="utf-8"))
 
         dashboard = web_app.build_dashboard()
-        self.assertEqual(dashboard["gate_events"], [])
+        self.assertEqual(dashboard["gate_events"][0]["reasons"],
+                         ["The Korean guest message needs a Hangul-only rewrite."])
         self.assertEqual(dashboard["activity"][0]["label"], "Draft rewrite requested")
 
         args["message_draft"] = "DEMO-202편이 결항되었습니다. 연박 안내를 확인해 주세요."

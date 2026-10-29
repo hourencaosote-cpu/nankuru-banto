@@ -744,19 +744,32 @@ def build_dashboard():
 
     gate_events = []
     seen_guests = set()
+    blocked_actions = {
+        "rejected_proposal", "rejected_cancellation", "rejected_reminder", "rejected_refund",
+        "duplicate_staff_note", "draft_rewrite_requested",
+        "approval_blocked_notice_changed", "refund_blocked_notice_changed",
+    }
     for entry in reversed(log_entries[-80:]):
-        if entry.get("action") not in {"rejected_proposal", "rejected_cancellation", "rejected_reminder", "rejected_refund"}:
+        action = entry.get("action")
+        if action not in blocked_actions:
             continue
         detail = entry.get("detail", {})
         guest_id = detail.get("guest_id", "Unknown guest")
         if guest_id in seen_guests:
             continue
         seen_guests.add(guest_id)
+        raw_reasons = detail.get("reasons")
+        if isinstance(raw_reasons, list) and raw_reasons:
+            reasons = [_gate_reason(reason) for reason in raw_reasons]
+        elif action == "draft_rewrite_requested" and detail.get("reason"):
+            reasons = [_gate_reason(detail["reason"])]
+        else:
+            reasons = [ACTION_LABELS[action]]
         gate_events.append(
             {
                 "guest_name": guest_names.get(guest_id, "Unknown guest"),
                 "time": entry.get("time", ""),
-                "reasons": [_gate_reason(reason) for reason in detail.get("reasons", [])],
+                "reasons": reasons,
             }
         )
         if len(gate_events) == 4:
@@ -935,17 +948,28 @@ def paypal_webhook():
                             return {"status": "ignored"}, 200
                         if get_invoice_status(env, invoice_id) != "CANCELLED":
                             return {"status": "not cancelled yet"}, 503
-                        if item.get("status") == "cancelled":
-                            return {"status": "ok"}, 200
                         queue = read_json(approvals_path(), [])
                         current = next(entry for entry in queue if entry.get("type") == "extension"
                                        and entry.get("invoice_id") == invoice_id)
+                        pending_cancellation = next(
+                            (entry for entry in queue if entry.get("type") == "invoice_cancellation"
+                             and entry.get("proposal_id") == current.get("id")
+                             and entry.get("status") == "pending"),
+                            None,
+                        )
+                        if current.get("status") == "cancelled" and pending_cancellation is None:
+                            return {"status": "ok"}, 200
                         current["status"] = "cancelled"
+                        if pending_cancellation is not None:
+                            pending_cancellation["status"] = "done"
                         write_json(approvals_path(), queue)
-                        log_decision("paypal", "invoice_cancel_confirmed", {
+                        detail = {
                             "id": current.get("id"), "guest_id": current.get("guest_id"),
                             "invoice_id": invoice_id, "via": "webhook",
-                        })
+                        }
+                        if pending_cancellation is not None:
+                            detail["proposal_closed"] = pending_cancellation.get("id")
+                        log_decision("paypal", "invoice_cancel_confirmed", detail)
                         return {"status": "ok"}, 200
                     if item.get("status") == "confirmed":
                         log_decision("paypal", "webhook_received", {

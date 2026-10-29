@@ -201,6 +201,21 @@ class CancellationTests(unittest.TestCase):
                 self.assertEqual(cancel.call_count, int(status == "sent"))
                 self.assertEqual(delete.call_count, int(status == "approved"))
 
+    def test_manager_closes_pending_cancellation_when_extension_already_cancelled(self):
+        self.save([self.extension("cancelled"), self.cancellation()])
+        with mock.patch.object(approve, "load_env") as load_env, \
+             mock.patch.object(approve, "get_invoice_status") as get_status, \
+             mock.patch.object(approve, "cancel_invoice") as cancel, \
+             mock.patch.object(approve, "delete_invoice_draft") as delete:
+            result = approve.approve_cancellation("P002")
+        self.assertEqual(result["status"], "done")
+        self.assertEqual([item["status"] for item in self.queue()], ["cancelled", "done"])
+        load_env.assert_not_called()
+        get_status.assert_not_called()
+        cancel.assert_not_called()
+        delete.assert_not_called()
+        self.assertEqual(self.entries()[-1]["action"], "approved_cancellation")
+
     def test_paid_is_confirmed_and_never_cancelled(self):
         self.save([self.extension(), self.cancellation()])
         with mock.patch.object(approve, "get_invoice_status", return_value="PAID"), \
@@ -247,15 +262,16 @@ class CancellationTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in self.queue()], ["sent", "rejected"])
 
     def test_paypal_api_shapes_and_failures(self):
-        with mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
-             mock.patch.object(paypal_tools, "_call", return_value=(204, {})) as call:
-            paypal_tools.cancel_invoice({}, "INV-1", "Guest note")
-            self.assertEqual(call.call_args.args, ("POST", "/v2/invoicing/invoices/INV-1/cancel"))
-            self.assertEqual(call.call_args.kwargs["body"], {
-                "subject": "Your stay extension invoice was cancelled", "note": "Guest note",
-                "send_to_recipient": True, "send_to_invoicer": True})
-            paypal_tools.delete_invoice_draft({}, "INV-1")
-            self.assertEqual(call.call_args.args, ("DELETE", "/v2/invoicing/invoices/INV-1"))
+        for code in (200, 201, 202, 204):
+            with self.subTest(code=code), mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
+                 mock.patch.object(paypal_tools, "_call", return_value=(code, {})) as call:
+                paypal_tools.cancel_invoice({}, "INV-1", "Guest note")
+                self.assertEqual(call.call_args.args, ("POST", "/v2/invoicing/invoices/INV-1/cancel"))
+                self.assertEqual(call.call_args.kwargs["body"], {
+                    "subject": "Your stay extension invoice was cancelled", "note": "Guest note",
+                    "send_to_recipient": True, "send_to_invoicer": True})
+                paypal_tools.delete_invoice_draft({}, "INV-1")
+                self.assertEqual(call.call_args.args, ("DELETE", "/v2/invoicing/invoices/INV-1"))
         with mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
              mock.patch.object(paypal_tools, "_call", return_value=(422, {})):
             with self.assertRaises(RuntimeError):

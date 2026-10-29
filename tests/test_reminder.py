@@ -100,16 +100,17 @@ class ReminderTests(unittest.TestCase):
                              {"status": "PAID", "due_amount": None,
                               "viewed_by_recipient": False, "last_sent_time": None})
 
-    def test_send_reminder_uses_sandbox_path_body_and_requires_204(self):
+    def test_send_reminder_uses_sandbox_path_body_and_accepts_success_codes(self):
         self.assertEqual(paypal_tools.API_BASE, "https://api-m.sandbox.paypal.com")
+        for code in (200, 201, 202, 204):
+            with self.subTest(code=code), mock.patch.object(paypal_tools, "_get_token", return_value="fake"), \
+                 mock.patch.object(paypal_tools, "_call", return_value=(code, {})) as call:
+                paypal_tools.send_reminder({}, "INV-1", "Subject", "Note")
+                self.assertEqual(call.call_args.args, ("POST", "/v2/invoicing/invoices/INV-1/remind"))
+                self.assertEqual(call.call_args.kwargs["body"],
+                                 {"subject": "Subject", "note": "Note", "send_to_invoicer": True})
         with mock.patch.object(paypal_tools, "_get_token", return_value="fake"), \
-             mock.patch.object(paypal_tools, "_call", return_value=(204, {})) as call:
-            paypal_tools.send_reminder({}, "INV-1", "Subject", "Note")
-            self.assertEqual(call.call_args.args, ("POST", "/v2/invoicing/invoices/INV-1/remind"))
-            self.assertEqual(call.call_args.kwargs["body"],
-                             {"subject": "Subject", "note": "Note", "send_to_invoicer": True})
-        with mock.patch.object(paypal_tools, "_get_token", return_value="fake"), \
-             mock.patch.object(paypal_tools, "_call", return_value=(202, {})):
+             mock.patch.object(paypal_tools, "_call", return_value=(422, {})):
             with self.assertRaises(RuntimeError):
                 paypal_tools.send_reminder({}, "INV-1", "Subject", "Note")
 

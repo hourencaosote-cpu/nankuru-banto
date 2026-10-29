@@ -252,11 +252,14 @@ class RefundTests(unittest.TestCase):
              mock.patch.object(paypal_tools, "_call", return_value=(201, {"id": "RF-P", "status": "PENDING"})):
             self.assertEqual(paypal_tools.refund_capture({}, "CAP-1", 144, "stable-id", "note"),
                              {"refund_id": "RF-P", "status": "PENDING"})
-        with mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
-             mock.patch.object(paypal_tools, "_call", return_value=(200, {"refund_id": "RF-2"})) as call:
-            self.assertEqual(paypal_tools.record_external_refund({}, "INV-1", 144), {"refund_id": "RF-2"})
-            self.assertEqual(call.call_args.args, ("POST", "/v2/invoicing/invoices/INV-1/refunds"))
-            self.assertEqual(call.call_args.kwargs["body"], {"method": "OTHER", "amount": {"currency_code": "USD", "value": "144.00"}})
+        for code in (200, 201, 202, 204):
+            refund = {} if code == 204 else {"refund_id": "RF-2"}
+            with self.subTest(code=code), mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
+                 mock.patch.object(paypal_tools, "_call", return_value=(code, refund)) as call:
+                self.assertEqual(paypal_tools.record_external_refund({}, "INV-1", 144),
+                                 {"refund_id": refund.get("refund_id")})
+                self.assertEqual(call.call_args.args, ("POST", "/v2/invoicing/invoices/INV-1/refunds"))
+                self.assertEqual(call.call_args.kwargs["body"], {"method": "OTHER", "amount": {"currency_code": "USD", "value": "144.00"}})
         with mock.patch.object(paypal_tools, "_get_token", return_value="token"), \
              mock.patch.object(paypal_tools, "_call", return_value=(422, {})):
             with self.assertRaises(RuntimeError):

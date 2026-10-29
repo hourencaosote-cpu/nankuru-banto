@@ -132,6 +132,13 @@ def approve_cancellation(item_id, env=None):
     if cancellation.get("type") != "invoice_cancellation" or cancellation.get("status") != "pending":
         raise ValueError("This cancellation is no longer waiting for approval.")
     extension = _find_item(queue, cancellation.get("proposal_id"))
+    if extension.get("type") == "extension" and extension.get("status") == "cancelled":
+        cancellation["status"] = "done"
+        write_json(approvals_path(), queue)
+        log_decision("human", "approved_cancellation", {
+            "id": item_id, "proposal_id": extension["id"], "guest_id": extension.get("guest_id"),
+        })
+        return {"status": "done", "item": cancellation}
     if extension.get("type") != "extension" or extension.get("status") not in {"approved", "sent"}:
         raise ValueError("The original extension is no longer eligible for cancellation.")
     invoice_id = extension.get("invoice_id")

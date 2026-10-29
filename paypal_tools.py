@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 
 # 安全のため、接続先は sandbox に固定する（Live には絶対につながない）
 API_BASE = "https://api-m.sandbox.paypal.com"
+INVOICING_ACTION_SUCCESS = {200, 201, 202, 204}
 
 
 def _call(method, path, token=None, body=None, basic_auth=None, form=None, headers=None):
@@ -193,7 +194,7 @@ def record_external_refund(env, invoice_id, amount):
         "method": "OTHER",
         "amount": {"currency_code": "USD", "value": _usd_amount(amount)},
     })
-    if status != 200:
+    if status not in INVOICING_ACTION_SUCCESS:
         raise RuntimeError("PayPal could not record the external refund.")
     return {"refund_id": refund.get("refund_id")}
 
@@ -210,7 +211,7 @@ def send_reminder(env, invoice_id, subject, note):
         })
     except SystemExit:
         raise RuntimeError("PayPal could not send the invoice reminder.") from None
-    if status != 204:
+    if status not in INVOICING_ACTION_SUCCESS:
         raise RuntimeError("PayPal could not send the invoice reminder.")
 
 
@@ -224,7 +225,7 @@ def cancel_invoice(env, invoice_id, note):
         "send_to_recipient": True,
         "send_to_invoicer": True,
     })
-    if status != 204:
+    if status not in INVOICING_ACTION_SUCCESS:
         raise RuntimeError("PayPal could not cancel the invoice.")
 
 
@@ -233,7 +234,7 @@ def delete_invoice_draft(env, invoice_id):
     token = _get_token(env)
     path = f"/v2/invoicing/invoices/{urllib.parse.quote(str(invoice_id), safe='')}"
     status, _ = _call("DELETE", path, token=token)
-    if status != 204:
+    if status not in INVOICING_ACTION_SUCCESS:
         raise RuntimeError("PayPal could not delete the invoice draft.")
 
 
