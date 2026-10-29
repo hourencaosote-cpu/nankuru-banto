@@ -1,0 +1,285 @@
+[
+  {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "functionCall": {
+                "name": "list_open_invoices",
+                "args": {},
+                "id": "call_99131"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "list_guests",
+                "args": {},
+                "id": "call_99132"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0,
+        "finishMessage": "Model generated function call(s)."
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 1954,
+      "candidatesTokenCount": 23,
+      "totalTokenCount": 2407,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 1954
+        }
+      ],
+      "thoughtsTokenCount": 430,
+      "serviceTier": "standard"
+    },
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "E83iav__Js_qrfcP3diKoQw"
+  },
+  {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "functionCall": {
+                "name": "get_flight_status",
+                "args": {
+                  "flight": "DEMO-101"
+                },
+                "id": "call_134137"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "get_flight_status",
+                "args": {
+                  "flight": "DEMO-202"
+                },
+                "id": "call_134138"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "get_flight_status",
+                "args": {
+                  "flight": "DEMO-303"
+                },
+                "id": "call_134139"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "get_flight_status",
+                "args": {
+                  "flight": "DEMO-404"
+                },
+                "id": "call_134140"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "get_flight_status",
+                "args": {
+                  "flight": "DEMO-505"
+                },
+                "id": "call_134141"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0,
+        "finishMessage": "Model generated function call(s)."
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 3021,
+      "candidatesTokenCount": 115,
+      "totalTokenCount": 3475,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 3021
+        }
+      ],
+      "thoughtsTokenCount": 339,
+      "serviceTier": "standard"
+    },
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "GM3iaoPpE4ax2roPysKMqQw"
+  },
+  {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "functionCall": {
+                "name": "check_invoice_payment",
+                "args": {
+                  "guest_id": "G001"
+                },
+                "id": "call_133573"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "check_invoice_payment",
+                "args": {
+                  "guest_id": "G002"
+                },
+                "id": "call_133574"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "check_invoice_payment",
+                "args": {
+                  "guest_id": "G003"
+                },
+                "id": "call_133575"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0,
+        "finishMessage": "Model generated function call(s)."
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 3930,
+      "candidatesTokenCount": 69,
+      "totalTokenCount": 4738,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 3930
+        }
+      ],
+      "thoughtsTokenCount": 739,
+      "serviceTier": "standard"
+    },
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "Hc3iaoKXL6GB2roPwZ-bmQw"
+  },
+  {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "functionCall": {
+                "name": "propose_payment_reminder",
+                "args": {
+                  "guest_id": "G001",
+                  "message_draft": "Dear Emily Carter, We are writing to follow up regarding your stay extension. As your flight has been cancelled, please note that your extension will be confirmed once payment is completed.",
+                  "reason": "Flight DEMO-101 remains cancelled with the next available flight on August 9, and the sent invoice remains unpaid."
+                },
+                "id": "call_169921"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "propose_invoice_cancellation",
+                "args": {
+                  "reason": "Flight DEMO-202 has been restored to on-time status, making the stay extension unnecessary.",
+                  "message_draft": "김민지 님, 예약하신 항공편의 운항이 정상화되어 연박이 필요하지 않게 되었습니다. 안내해 드렸던 인보이스는 취소될 예정이므로 결제하지 않으셔도 됩니다.",
+                  "guest_id": "G002"
+                },
+                "id": "call_169922"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "propose_refund",
+                "args": {
+                  "message_draft": "田中 健様、ご利用予定の航空便が運航再開となったため、延泊は不要となりました。すでにお支払いいただきました延泊分につきましては、返金の手続きを進めさせていただきます。",
+                  "guest_id": "G003",
+                  "reason": "Flight DEMO-303 has been restored to on-time status, so the confirmed stay extension is no longer needed and should be refunded."
+                },
+                "id": "call_169923"
+              }
+            },
+            {
+              "functionCall": {
+                "name": "notify_staff",
+                "args": {
+                  "guest_id": "G004",
+                  "note": "Guest Liu Wei's flight DEMO-404 is cancelled with the next available flight on August 8, but the booking was made through an OTA and requires staff handling."
+                },
+                "id": "call_169924"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0,
+        "finishMessage": "Model generated function call(s)."
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 4869,
+      "candidatesTokenCount": 377,
+      "totalTokenCount": 6832,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 4869
+        }
+      ],
+      "thoughtsTokenCount": 1586,
+      "serviceTier": "standard"
+    },
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "J83iav2KKozh1e8P-IWHkAE"
+  },
+  {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "### Summary of Actions\n\n1. **Emily Carter (G001 / Flight DEMO-101)**\n   - **Flight Status:** Cancelled (next available flight on August 9, 2026).\n   - **Invoice Status:** Sent, unpaid.\n   - **Action Taken:** Submitted a payment reminder proposal (`propose_payment_reminder`) for staff review.\n\n2. **Kim Minji (G002 / Flight DEMO-202)**\n   - **Flight Status:** Restored / On time.\n   - **Invoice Status:** Sent, unpaid.\n   - **Action Taken:** Submitted an invoice cancellation proposal (`propose_invoice_cancellation`) since the extension is no longer required.\n\n3. **Ken Tanaka (G003 / Flight DEMO-303)**\n   - **Flight Status:** Restored / On time.\n   - **Invoice Status:** Confirmed / Paid.\n   - **Action Taken:** Submitted a refund proposal (`propose_refund`) for the unnecessary stay extension.\n\n4. **Liu Wei (G004 / Flight DEMO-404)**\n   - **Flight Status:** Cancelled (next available flight on August 8, 2026).\n   - **Booking Channel:** OTA.\n   - **Action Taken:** Attempted staff notification; staff had already been notified for this guest.\n\n5. **Sophie Martin (G005 / Flight DEMO-505)**\n   - **Flight Status:** On time.\n   - **Action Taken:** No action needed."
+            }
+          ],
+          "role": "model"
+        },
+        "finishReason": "STOP",
+        "index": 0
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 6994,
+      "candidatesTokenCount": 340,
+      "totalTokenCount": 7831,
+      "cachedContentTokenCount": 4894,
+      "promptTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 6994
+        }
+      ],
+      "cacheTokensDetails": [
+        {
+          "modality": "TEXT",
+          "tokenCount": 4894
+        }
+      ],
+      "thoughtsTokenCount": 497,
+      "serviceTier": "standard"
+    },
+    "modelVersion": "gemini-3.8-flash",
+    "responseId": "OM3iapHYC5ja2roPjMLb6Qk"
+  }
+]
