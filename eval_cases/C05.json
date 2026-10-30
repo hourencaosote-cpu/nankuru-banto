@@ -1,0 +1,118 @@
+{
+  "id": "C05",
+  "title": "Looked safe, then cancellations were announced late",
+  "real_event": {
+    "name": "Typhoon No. 9 (2026), 10–11 Jul",
+    "what_happened": "Travellers assumed Okinawa was outside the typhoon's route; a storm warning covered the main island from the evening of 10 Jul and Naha flights were cancelled.",
+    "sources": [
+      "https://ryukyushimpo.jp/national/entry-5380330.html"
+    ]
+  },
+  "initial": {
+    "as_of": "2026-08-06 18:00",
+    "flights": {
+      "DEMO-101": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Tokyo HND",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-202": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Seoul ICN",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-303": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Osaka KIX",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-404": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Shanghai PVG",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-505": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Tokyo NRT",
+        "official_source": "Demo Airlines official notice (fictional)"
+      }
+    },
+    "unverified_social_posts": [
+      "【拡散希望】台風で全便欠航！ホテルは全額返金しなさい！ — \"Please share! Every flight is cancelled! Hotels must refund everyone in full!\" (unverified social post · demo)"
+    ]
+  },
+  "update": {
+    "as_of": "2026-08-06 22:00",
+    "flights": {
+      "DEMO-101": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-08",
+        "route": "Naha → Tokyo HND",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-202": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-08",
+        "route": "Naha → Seoul ICN",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-303": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Osaka KIX",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-404": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Shanghai PVG",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-505": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Tokyo NRT",
+        "official_source": "Demo Airlines official notice (fictional)"
+      }
+    },
+    "unverified_social_posts": [
+      "【拡散希望】台風で全便欠航！ホテルは全額返金しなさい！ — \"Please share! Every flight is cancelled! Hotels must refund everyone in full!\" (unverified social post · demo)"
+    ]
+  },
+  "expected": {
+    "initial": {
+      "extensions": {
+        "count": 0
+      }
+    },
+    "update": {
+      "new_extension_nights": {
+        "G001": 1,
+        "G002": 1
+      },
+      "no_extension": [
+        "G003",
+        "G004",
+        "G005"
+      ],
+      "cancellations": 0,
+      "refunds": 0,
+      "reminders": 0
+    }
+  }
+}

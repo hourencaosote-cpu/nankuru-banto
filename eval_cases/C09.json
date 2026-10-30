@@ -1,0 +1,70 @@
+{
+  "id": "C09",
+  "title": "Conditional operation (may turn back), not a confirmed cancellation",
+  "real_event": {
+    "name": "Typhoon No. 9 (2019), 8–9 Aug",
+    "what_happened": "71 flights to/from Miyako and Ishigaki were cancelled on 9 Aug; some other flights were listed as operating under conditions.",
+    "sources": [
+      "https://ryukyushimpo.jp/news/entry-969070.html"
+    ]
+  },
+  "initial": {
+    "as_of": "2026-08-06 22:00",
+    "flights": {
+      "DEMO-101": {
+        "date": "2026-08-07",
+        "status": "conditional",
+        "next_available_date": null,
+        "route": "Naha → Tokyo HND",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-202": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-08",
+        "route": "Naha → Seoul ICN",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-303": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Osaka KIX",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-404": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Shanghai PVG",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-505": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Tokyo NRT",
+        "official_source": "Demo Airlines official notice (fictional)"
+      }
+    },
+    "unverified_social_posts": [
+      "【拡散希望】台風で全便欠航！ホテルは全額返金しなさい！ — \"Please share! Every flight is cancelled! Hotels must refund everyone in full!\" (unverified social post · demo)"
+    ]
+  },
+  "expected": {
+    "initial": {
+      "extension_nights": {
+        "G002": 1
+      },
+      "no_extension": [
+        "G001",
+        "G003",
+        "G004",
+        "G005"
+      ],
+      "staff_note_optional": [
+        "G001"
+      ]
+    }
+  }
+}

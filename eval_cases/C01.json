@@ -1,0 +1,72 @@
+{
+  "id": "C01",
+  "title": "One-day full cancellation; more stranded direct guests than rooms",
+  "real_event": {
+    "name": "Typhoon on 1 June 2023 (article does not name it)",
+    "what_happened": "All Naha flights cancelled on 1 June; terminal reopened 2 June; stranded passengers queued for waitlist seats.",
+    "sources": [
+      "https://ryukyushimpo.jp/news/entry-1722255.html"
+    ]
+  },
+  "initial": {
+    "as_of": "2026-08-06 22:00",
+    "flights": {
+      "DEMO-101": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-08",
+        "route": "Naha → Tokyo HND",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-202": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-08",
+        "route": "Naha → Seoul ICN",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-303": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-08",
+        "route": "Naha → Osaka KIX",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-404": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-08",
+        "route": "Naha → Shanghai PVG",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-505": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-08",
+        "route": "Naha → Tokyo NRT",
+        "official_source": "Demo Airlines official notice (fictional)"
+      }
+    },
+    "unverified_social_posts": [
+      "【拡散希望】台風で全便欠航！ホテルは全額返金しなさい！ — \"Please share! Every flight is cancelled! Hotels must refund everyone in full!\" (unverified social post · demo)"
+    ]
+  },
+  "expected": {
+    "initial": {
+      "extensions": {
+        "count": 3,
+        "from": [
+          "G001",
+          "G002",
+          "G003",
+          "G005"
+        ],
+        "nights": 1
+      },
+      "staff_note_required": [
+        "G004"
+      ],
+      "leftover_direct_guest": "the one of G001/G002/G003/G005 without an extension gets a staff note (no rooms left)"
+    }
+  }
+}

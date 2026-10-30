@@ -22,6 +22,10 @@ AIエージェントが手伝う仕組み。PayPal AI Hackathon（Devpost）へ�
 | common.py | env.txt 読み込み、JSON 読み書き、判断ログ（logs/decision_log.jsonl） |
 | data/guests.json | 架空の宿泊客5名と宿のルール（hotel_policy.typhoon_discount_percent） |
 | data/flights.json | 架空の公式運航情報と、出典不明のSNS投稿（デマのテスト用） |
+| data/flights_update.json | 23:30 の公式運航情報更新（デモ用の架空データ） |
+| eval_ai.py | Gemini の提案を架空の評価ケースで検証する実行スクリプト |
+| eval_cases/ | 出典と期待結果を記した架空の評価ケース10件 |
+| record_demo.py | Gemini のデモ再生記録を作り直すスクリプト（Sandbox 請求あり） |
 | env.txt | 秘密のキー。絶対に読まない・表示しない・コミットしない |
 
 承認リストの status の流れ（extension）：pending → approved（下書きのみ）/ sent → confirmed、または rejected。

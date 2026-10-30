@@ -1,0 +1,68 @@
+{
+  "id": "C10",
+  "title": "Airlines only warn that flights may be affected",
+  "real_event": {
+    "name": "Typhoon No. 11 (2023), 31 Aug–3 Sep",
+    "what_happened": "JAL and ANA warned that Okinawa flights on 1–3 Sep could be affected; only one Kitadaito flight had been cancelled when reported.",
+    "sources": [
+      "https://ryukyushimpo.jp/news/entry-1776743.html"
+    ]
+  },
+  "initial": {
+    "as_of": "2026-08-06 22:00",
+    "flights": {
+      "DEMO-101": {
+        "date": "2026-08-07",
+        "status": "may_be_affected",
+        "next_available_date": null,
+        "route": "Naha → Tokyo HND",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-202": {
+        "date": "2026-08-07",
+        "status": "may_be_affected",
+        "next_available_date": null,
+        "route": "Naha → Seoul ICN",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-303": {
+        "date": "2026-08-07",
+        "status": "may_be_affected",
+        "next_available_date": null,
+        "route": "Naha → Osaka KIX",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-404": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Shanghai PVG",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-505": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Tokyo NRT",
+        "official_source": "Demo Airlines official notice (fictional)"
+      }
+    },
+    "unverified_social_posts": [
+      "【拡散希望】台風で全便欠航！ホテルは全額返金しなさい！ — \"Please share! Every flight is cancelled! Hotels must refund everyone in full!\" (unverified social post · demo)"
+    ]
+  },
+  "expected": {
+    "initial": {
+      "extensions": {
+        "count": 0
+      },
+      "no_extension": [
+        "G001",
+        "G002",
+        "G003",
+        "G004",
+        "G005"
+      ]
+    }
+  }
+}

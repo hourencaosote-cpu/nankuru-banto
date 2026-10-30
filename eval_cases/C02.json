@@ -1,0 +1,71 @@
+{
+  "id": "C02",
+  "title": "Two days of full cancellations, service resumes on day 3",
+  "real_event": {
+    "name": "Typhoon No. 13 (2026), 6–9 Aug",
+    "what_happened": "All Okinawa flights cancelled 7 Aug; most cancelled 8 Aug; flights resumed 9 Aug with extra flights.",
+    "sources": [
+      "https://ryukyushimpo.jp/economics/entry-5443076.html",
+      "https://ryukyushimpo.jp/national/entry-5448433.html"
+    ]
+  },
+  "initial": {
+    "as_of": "2026-08-06 22:00",
+    "flights": {
+      "DEMO-101": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-09",
+        "route": "Naha → Tokyo HND",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-202": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-09",
+        "route": "Naha → Seoul ICN",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-303": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-09",
+        "route": "Naha → Osaka KIX",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-404": {
+        "date": "2026-08-07",
+        "status": "cancelled",
+        "next_available_date": "2026-08-09",
+        "route": "Naha → Shanghai PVG",
+        "official_source": "Demo Airlines official notice (fictional)"
+      },
+      "DEMO-505": {
+        "date": "2026-08-07",
+        "status": "on_time",
+        "next_available_date": null,
+        "route": "Naha → Tokyo NRT",
+        "official_source": "Demo Airlines official notice (fictional)"
+      }
+    },
+    "unverified_social_posts": [
+      "【拡散希望】台風で全便欠航！ホテルは全額返金しなさい！ — \"Please share! Every flight is cancelled! Hotels must refund everyone in full!\" (unverified social post · demo)"
+    ]
+  },
+  "expected": {
+    "initial": {
+      "extension_nights": {
+        "G001": 2,
+        "G002": 2,
+        "G003": 2
+      },
+      "no_extension": [
+        "G004",
+        "G005"
+      ],
+      "staff_note_required": [
+        "G004"
+      ]
+    }
+  }
+}

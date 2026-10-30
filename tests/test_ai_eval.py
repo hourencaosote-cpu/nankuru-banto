@@ -12,7 +12,7 @@ import eval_ai
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = Path.home() / "Developer" / "codex_tasks" / "eval_cases"
+CASES = ROOT / "eval_cases"
 MESSAGES = {
     "G001": "Your flight is cancelled. We can extend your stay.",
     "G002": "항공편이 결항되었습니다. 연박을 안내합니다.",
@@ -98,7 +98,6 @@ class EvalJudgeTests(unittest.TestCase):
         self.assertTrue(eval_ai._language_ok("Japanese", "DEMO-303 便が欠航しました。"))
         self.assertTrue(eval_ai._language_ok("Chinese", "DEMO-404 航班已取消。"))
 
-    @unittest.skipUnless(CASES.is_dir(), "External evaluation cases are not installed")
     def test_all_ten_cases_accept_matching_items_and_reject_a_deviation(self):
         cases = eval_ai.load_cases(CASES)
         self.assertEqual([case["id"] for case in cases], [f"C{number:02d}" for number in range(1, 11)])
@@ -297,7 +296,6 @@ class GateAndEvalRuntimeTests(unittest.TestCase):
         self.assertEqual(len(report["results"]), 1)
         self.assertTrue(path.exists())
 
-    @unittest.skipUnless(CASES.is_dir(), "External evaluation cases are not installed")
     def test_single_case_selection_excludes_demo_and_case_sources(self):
         response = {"candidates": [{"content": {"role": "model", "parts": [{"text": "Review complete."}]}}]}
         with mock.patch.object(agent, "call_gemini", return_value=response) as gemini:
