@@ -2,7 +2,7 @@
 
 **An AI night-shift front desk for small inns. When a typhoon cancels flights, it finds the stranded guests, proposes stay extensions in each guest's language, and closes the loop with PayPal — invoices, payment confirmation, reminders, cancellations and refunds — while code-enforced safety rules and a human manager stay in control of every dollar.**
 
-**▶ Demo video (2:47):** https://youtu.be/Pxj6ZQWFPPs
+**▶ Demo video (2:50):** https://youtu.be/r0VMprVBbd4
 
 **▶ Live demo:** https://nankuru-banto.onrender.com — open it, press **Reset demo**, then **Run AI check**. No login needed.
 
